@@ -61,6 +61,7 @@ ERRORS: Dict[str, tuple] = {
     "GUIDE_INVALID_IMAGE": (400, "That file cannot be decoded as an image."),
     "GUIDE_TOO_LARGE": (413, "That file is over the size limit."),
     "GUIDE_UNSUPPORTED_TYPE": (415, "That file type is not accepted."),
+    "GUIDE_TEXT_TOO_LONG": (400, "That description is longer than the limit."),
     # Not part of the documented table. See the module docstring.
     "REQUEST_INVALID": (422, "The request body is not valid."),
     "NOT_IMPLEMENTED": (501, "This endpoint is not implemented yet."),

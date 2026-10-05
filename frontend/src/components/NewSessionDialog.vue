@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import AppButton from './AppButton.vue'
-import { checkSessionName, sessionDirFor, suggestSessionName } from '@/utils/paths'
+import { checkSessionName, separatorFor, sessionDirFor, suggestSessionName } from '@/utils/paths'
 import type { ProjectInfo } from '@/api'
 
 const props = defineProps<{
@@ -46,7 +46,8 @@ const destination = computed(() => {
   if (!root || !name.value.trim()) {
     return null
   }
-  return `${sessionDirFor(root, check.value.value || name.value.trim())}/`
+  const dir = sessionDirFor(root, check.value.value || name.value.trim())
+  return `${dir}${separatorFor(dir)}`
 })
 
 const canCreate = computed(() => check.value.ok && !props.busy)

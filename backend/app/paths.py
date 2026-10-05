@@ -78,12 +78,18 @@ def is_root(path: str) -> bool:
 
 
 def parent_of(path: str) -> Optional[str]:
-    """Parent directory, or ``None`` for ``/``."""
+    """Parent directory, or ``None`` when ``path`` is already a volume root.
+
+    ``os.path.dirname`` returns the path itself for a root, which is how a
+    Windows drive like ``C:\\`` is told apart from a folder. Testing for ``/``
+    alone missed both ``C:\\`` and the ``\\`` that ``/`` normalises to on
+    Windows, so the picker's Up button never disabled at the top of a drive.
+    """
     normalized = normalize(path)
-    if normalized == "/":
-        return None
     parent = os.path.dirname(normalized)
-    return parent or "/"
+    if not parent or parent == normalized:
+        return None
+    return parent
 
 
 def is_within(path: str, root: str) -> bool:

@@ -11,7 +11,17 @@
  */
 
 import { ApiError } from './error'
-import { checkFolderName, checkProjectRoot, checkSessionName, sessionDirFor } from '@/utils/paths'
+import {
+  checkFolderName,
+  checkProjectRoot,
+  checkSessionName,
+  isUnder,
+  lastSegment,
+  separatorFor,
+  sessionDirFor,
+  splitSegments,
+  trimTrailingSeparator,
+} from '@/utils/paths'
 import type {
   AdvanceResult,
   AppConfig,
@@ -23,6 +33,7 @@ import type {
   GuideBatchResult,
   GuideDeleteResult,
   GuideEntry,
+  GuideUpdateResult,
   GuideUploadResult,
   GuidesResponse,
   Health,
@@ -131,6 +142,8 @@ const STAGE_SEEDS: StageSeed[] = [
 const TOTAL_STAGES = STAGE_SEEDS.length
 /** Global floor on take length, mirrored from the YAML default. */
 const MIN_DURATION_S = 1
+/** Mirrors guides.instructions_max_length in the shipped YAML. */
+const INSTRUCTIONS_MAX_LENGTH = 500
 
 const MOCK_CONFIG: AppConfig = {
   app_title: 'D435i Capture',
@@ -257,7 +270,12 @@ function pseudoHash(seed: string): string {
 /* ------------------------------------------------------------------ store */
 
 interface MockGuide {
-  entry: GuideEntry
+  /**
+   * Everything the real manifest stores for a diagram. The description is not
+   * part of this: it lives in its own map, because clearing or replacing a
+   * diagram must not touch it.
+   */
+  entry: Omit<GuideEntry, 'instructions' | 'instructions_custom'>
   imageUrl: string
 }
 
@@ -291,39 +309,43 @@ const state: {
   dirs: new Set(),
 }
 
-const MOCK_HOME = '/Users/collector'
+const MOCK_HOME = 'C:\\Users\\collector'
+
+/** A second drive, so the picker shows more than one volume. */
+const MOCK_DRIVE = 'D:\\'
 
 /**
  * A plausible home directory, so the picker opens on something real rather than
  * an empty root.
  */
 const SEED_DIRS = [
-  '/',
-  '/Users',
+  'C:\\',
+  'C:\\Users',
   MOCK_HOME,
-  `${MOCK_HOME}/Documents`,
-  `${MOCK_HOME}/Documents/Project_A`,
-  `${MOCK_HOME}/Documents/Project_A/session_a`,
+  `${MOCK_HOME}\\Documents`,
+  `${MOCK_HOME}\\Documents\\Project_A`,
+  `${MOCK_HOME}\\Documents\\Project_A\\session_a`,
   // A session folder is recognised by the stage folders inside it, so the
   // seeded one carries them too.
-  `${MOCK_HOME}/Documents/Project_A/session_a/stage_01`,
-  `${MOCK_HOME}/Documents/Project_A/session_a/stage_02`,
-  `${MOCK_HOME}/Documents/Project_B`,
-  `${MOCK_HOME}/Documents/Field trial 04`,
-  `${MOCK_HOME}/Desktop`,
-  `${MOCK_HOME}/Downloads`,
-  `${MOCK_HOME}/Movies`,
-  `${MOCK_HOME}/.config`,
-  '/Volumes',
-  '/Volumes/Data',
-  '/Volumes/Data/captures',
+  `${MOCK_HOME}\\Documents\\Project_A\\session_a\\stage_01`,
+  `${MOCK_HOME}\\Documents\\Project_A\\session_a\\stage_02`,
+  `${MOCK_HOME}\\Documents\\Project_B`,
+  `${MOCK_HOME}\\Documents\\Field trial 04`,
+  `${MOCK_HOME}\\Desktop`,
+  `${MOCK_HOME}\\Downloads`,
+  `${MOCK_HOME}\\Movies`,
+  `${MOCK_HOME}\\.config`,
+  'C:\\Program Files',
+  MOCK_DRIVE,
+  `${MOCK_DRIVE}Data`,
+  `${MOCK_DRIVE}Data\\captures`,
 ]
 
 /**
  * Directories outside the allowed roots. Kept out of the seed tree on purpose,
  * so asking for them exercises PATH_NOT_ALLOWED rather than a missing folder.
  */
-const OUT_OF_RANGE_DIRS = ['/', '/Users', '/System', '/Library']
+const OUT_OF_RANGE_DIRS = ['E:\\', 'E:\\Archive']
 
 function seedDirs(): void {
   state.dirs.clear()
@@ -360,6 +382,29 @@ function seedGuides(): void {
   })
 }
 
+/**
+ * Description the collector wrote on the diagrams screen, keyed by stage. Kept
+ * apart from the seeded instructions so clearing one falls back to the other,
+ * which is the same shape the real manifest uses.
+ */
+const guideInstructions = new Map<number, string>()
+
+function defaultInstructions(index: number): string {
+  return STAGE_SEEDS[index - 1]?.instructions ?? ''
+}
+
+/** Description in force for a stage: the written one when present. */
+function effectiveInstructions(index: number): string {
+  return guideInstructions.get(index) ?? defaultInstructions(index)
+}
+
+function guideFields(index: number) {
+  return {
+    instructions: effectiveInstructions(index),
+    instructions_custom: guideInstructions.has(index),
+  }
+}
+
 seedGuides()
 
 /* ----------------------------------------------------------------- helpers */
@@ -378,7 +423,7 @@ function guidesSnapshot(): GuidesResponse {
     const index = i + 1
     const found = state.guides.get(index)
     if (found) {
-      return { ...found.entry }
+      return { ...found.entry, ...guideFields(index) }
     }
     return {
       index,
@@ -392,6 +437,7 @@ function guidesSnapshot(): GuidesResponse {
       height: null,
       uploaded_at: null,
       sha256: null,
+      ...guideFields(index),
     }
   })
 
@@ -426,7 +472,7 @@ function makeStages(): Stage[] {
       name: seed.name,
       // Copied from the config snapshot, not read live. This is what the mock
       // backs its own limits with, so the two cannot drift.
-      instructions: seed.instructions,
+      instructions: effectiveInstructions(i + 1),
       min_duration_s: MIN_DURATION_S,
       max_duration_s: seed.maxDurationS,
       state: stageState,
@@ -501,34 +547,31 @@ function freeSpaceFor(root: string): number {
 }
 
 /** Paths that always look read only, so the failure path is demonstrable. */
-const READ_ONLY_PREFIXES = ['/System', '/Library', '/private', '/usr', '/bin', '/sbin']
+const READ_ONLY_PREFIXES = ['C:\\Program Files', 'C:\\Windows', 'C:\\ProgramData']
 
 /**
- * Roots the picker is allowed to browse. Mirrors the fs.allow_roots config, and
- * exists to stop a project folder being aimed at a system directory rather than
- * as a security boundary.
+ * Roots the picker is allowed to browse. Mirrors what fs.allow_roots resolves to
+ * on the Windows host, the drives in use. It exists to stop a project folder
+ * being aimed at a system directory rather than as a security boundary, so a
+ * volume that is not listed exercises PATH_NOT_ALLOWED.
  */
-const ALLOWED_ROOTS = [MOCK_HOME, '/Volumes', '/media', '/mnt']
+const ALLOWED_ROOTS = ['C:\\', MOCK_DRIVE]
 
 function isReadOnly(path: string): boolean {
-  return READ_ONLY_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))
+  return READ_ONLY_PREFIXES.some((p) => isUnder(path, p))
 }
 
 function allowedRootFor(path: string): string | null {
   let best: string | null = null
   for (const root of ALLOWED_ROOTS) {
-    if (path === root || path.startsWith(`${root}/`)) {
-      if (best === null || root.length > best.length) {
-        best = root
-      }
+    if (isUnder(path, root) && (best === null || root.length > best.length)) {
+      best = root
     }
   }
   // The configured project folder is always treated as in range, so tightening
   // the list never locks a working setup out.
-  if (best === null && state.projectRoot) {
-    if (path === state.projectRoot || path.startsWith(`${state.projectRoot}/`)) {
-      best = state.projectRoot
-    }
+  if (best === null && state.projectRoot && isUnder(path, state.projectRoot)) {
+    best = state.projectRoot
   }
   return best
 }
@@ -537,14 +580,19 @@ function isAllowed(path: string): boolean {
   return allowedRootFor(path) !== null
 }
 
-/** Splits a path into normalised segments, resolving . and .. textually. */
+/**
+ * Normalises separators, resolves . and .. textually and upper cases a drive
+ * letter. POSIX shapes keep their leading slash, Windows shapes keep `C:\`.
+ */
 function normalise(path: string): string {
-  if (path === '/') {
-    return '/'
-  }
+  const drive = /^([A-Za-z]:)[\\/]?/.exec(path)
+  const prefix = drive ? `${drive[1].toUpperCase()}\\` : ''
+  const body = drive ? path.slice(drive[0].length) : path
+  const absolute = drive !== null || body.startsWith('/') || body.startsWith('\\')
+
   const out: string[] = []
-  for (const part of path.split('/')) {
-    if (!part || part === '.') {
+  for (const part of splitSegments(body)) {
+    if (part === '.') {
       continue
     }
     if (part === '..') {
@@ -553,21 +601,49 @@ function normalise(path: string): string {
     }
     out.push(part)
   }
-  return `/${out.join('/')}`
+
+  if (out.length === 0) {
+    return prefix || (absolute ? '/' : '')
+  }
+  const separator = drive ? '\\' : '/'
+  return `${prefix}${!drive && absolute ? '/' : ''}${out.join(separator)}`
 }
 
 function parentOf(path: string): string | null {
-  if (path === '/' || !path) {
+  const trimmed = trimTrailingSeparator(path)
+  if (trimmed === '' || trimmed === '/' || /^[A-Za-z]:\\$/.test(trimmed)) {
     return null
   }
-  const parts = path.split('/').filter(Boolean)
-  parts.pop()
-  return parts.length === 0 ? '/' : `/${parts.join('/')}`
+  const separator = separatorFor(trimmed)
+  const cut = trimmed.lastIndexOf(separator)
+  if (cut < 0) {
+    return null
+  }
+  const head = trimmed.slice(0, cut)
+  if (head === '') {
+    return '/'
+  }
+  if (/^[A-Za-z]:$/.test(head)) {
+    return `${head.toUpperCase()}\\`
+  }
+  return head
 }
 
 function joinPath(parent: string, name: string): string {
-  const base = parent.endsWith('/') ? parent.slice(0, -1) : parent
-  return base === '' ? `/${name}` : `${base}/${name}`
+  const base = trimTrailingSeparator(parent)
+  if (base === '/') {
+    return `/${name}`
+  }
+  if (/^[A-Za-z]:\\$/.test(base)) {
+    return `${base}${name}`
+  }
+  return `${base}${separatorFor(base)}${name}`
+}
+
+/** Name shown for a listing row. A volume root keeps its whole path. */
+function nodeName(path: string): string {
+  const parts = splitSegments(path)
+  return parts.length <= 1 ? path : parts[parts.length - 1]
 }
 
 /** Immediate subdirectory names of a path, used for the name collision check. */
@@ -577,7 +653,7 @@ function foldersUnder(path: string): string[] {
     if (parentOf(dir) !== path) {
       continue
     }
-    const name = dir.split('/').pop()
+    const name = lastSegment(dir)
     if (name && !name.startsWith('.')) {
       names.push(name)
     }
@@ -606,7 +682,7 @@ function fsListingOf(rawPath: string | null, showHidden: boolean): FsListing {
       if (parentOf(dir) !== path) {
         continue
       }
-      const name = dir.split('/').pop() ?? dir
+      const name = lastSegment(dir)
       if (!showHidden && name.startsWith('.')) {
         continue
       }
@@ -615,7 +691,9 @@ function fsListingOf(rawPath: string | null, showHidden: boolean): FsListing {
         path: dir,
         writable: !isReadOnly(dir),
         is_symlink: false,
-        looks_like_session: state.dirs.has(`${dir}/stage_01`) || dir === state.session?.session.data_dir,      })
+        looks_like_session:
+          state.dirs.has(joinPath(dir, 'stage_01')) || dir === state.session?.session.data_dir,
+      })
     }
   }
 
@@ -642,13 +720,13 @@ function fsListingOf(rawPath: string | null, showHidden: boolean): FsListing {
   return {
     path,
     parent,
-    name: path === '/' ? '/' : (path.split('/').pop() ?? path),
+    name: nodeName(path),
     home: MOCK_HOME,
     shortcuts: [
       { name: 'Home', path: MOCK_HOME },
-      { name: 'Documents', path: `${MOCK_HOME}/Documents` },
-      { name: 'Desktop', path: `${MOCK_HOME}/Desktop` },
-      { name: 'Volumes', path: '/Volumes' },
+      { name: 'Documents', path: `${MOCK_HOME}\\Documents` },
+      { name: 'Desktop', path: `${MOCK_HOME}\\Desktop` },
+      { name: 'D:', path: MOCK_DRIVE },
     ],
     readable: exists,
     writable,
@@ -675,8 +753,7 @@ function projectSnapshot(): ProjectInfo {
     }
   }
 
-  const segments = root.split('/').filter(Boolean)
-  const name = segments[segments.length - 1] ?? root
+  const name = lastSegment(root) || root
   const writable = !isReadOnly(root)
   const free = freeSpaceFor(root)
   const enough = free >= 5
@@ -890,7 +967,15 @@ export const backendApi: CaptureApi = {
 
   async config(): Promise<AppConfig> {
     await delay(120)
-    return MOCK_CONFIG
+    // Rebuilt per call so a description written on the diagrams screen is
+    // visible to the guide screen before a session exists.
+    return {
+      ...MOCK_CONFIG,
+      stages: MOCK_CONFIG.stages.map((stage) => ({
+        ...stage,
+        instructions: effectiveInstructions(stage.index),
+      })),
+    }
   },
 
   async project(): Promise<ProjectInfo> {
@@ -990,10 +1075,15 @@ export const backendApi: CaptureApi = {
       throw new ApiError('STAGE_NOT_FOUND', `Stage ${index} is out of range.`, 404)
     }
     if (!file.type.startsWith('image/')) {
-      throw new ApiError('GUIDE_UNSUPPORTED_TYPE', 'Only PNG and JPEG images are accepted.', 415, {
-        stage_index: index,
-        received: file.type || 'unknown',
-      })
+      throw new ApiError(
+        'GUIDE_UNSUPPORTED_TYPE',
+        'Only PNG, JPEG, WebP, BMP and GIF images are accepted.',
+        415,
+        {
+          stage_index: index,
+          received: file.type || 'unknown',
+        },
+      )
     }
     if (file.size > 10 * 1024 * 1024) {
       throw new ApiError('GUIDE_TOO_LARGE', 'That file is larger than 10 MB.', 413, {
@@ -1006,7 +1096,7 @@ export const backendApi: CaptureApi = {
     const dimensions = await measureImage(imageUrl)
     const seed = STAGE_SEEDS[index - 1]
 
-    const entry: GuideEntry = {
+    const entry: Omit<GuideEntry, 'instructions' | 'instructions_custom'> = {
       index,
       name: seed.name,
       configured: true,
@@ -1021,7 +1111,12 @@ export const backendApi: CaptureApi = {
     }
     state.guides.set(index, { entry, imageUrl })
 
-    return { ...entry, generated_preview: dimensions.width > 1600, ready: guidesSnapshot().ready }
+    return {
+      ...entry,
+      ...guideFields(index),
+      generated_preview: dimensions.width > 1600,
+      ready: guidesSnapshot().ready,
+    }
   },
 
   async uploadGuidesBatch(files: Map<number, File>): Promise<GuideBatchResult> {
@@ -1043,6 +1138,37 @@ export const backendApi: CaptureApi = {
     }
 
     return { applied, failed, guides: guidesSnapshot() }
+  },
+
+  async saveGuideInstructions(index: number, instructions: string): Promise<GuideUpdateResult> {
+    await delay(220)
+
+    if (index < 1 || index > TOTAL_STAGES) {
+      throw new ApiError('STAGE_NOT_FOUND', `Stage ${index} is out of range.`, 404)
+    }
+    const cleaned = instructions.trim()
+    if (cleaned.length > INSTRUCTIONS_MAX_LENGTH) {
+      throw new ApiError(
+        'GUIDE_TEXT_TOO_LONG',
+        `Keep the description to ${INSTRUCTIONS_MAX_LENGTH} characters or fewer.`,
+        400,
+        { index, length: cleaned.length, max_length: INSTRUCTIONS_MAX_LENGTH },
+      )
+    }
+
+    // An empty value clears the override, matching the real endpoint.
+    if (cleaned) {
+      guideInstructions.set(index, cleaned)
+    } else {
+      guideInstructions.delete(index)
+    }
+
+    const g = guidesSnapshot()
+    return {
+      ...(g.guides.find((entry) => entry.index === index) as GuideEntry),
+      ready: g.ready,
+      uploaded: g.uploaded,
+    }
   },
 
   async deleteGuide(index: number): Promise<GuideDeleteResult> {
@@ -1222,7 +1348,10 @@ export const backendApi: CaptureApi = {
       stage_index: index,
       state: 'recording',
       started_at: stage.recording_started_at,
-      bag_abs_path: `${ms.session.data_dir}/stage_${String(index).padStart(2, '0')}/capture.bag`,
+      bag_abs_path: joinPath(
+        joinPath(ms.session.data_dir, `stage_${String(index).padStart(2, '0')}`),
+        'capture.bag',
+      ),
       auto_stop_at_s: seed.maxDurationS,
     }
   },
@@ -1261,7 +1390,7 @@ export const backendApi: CaptureApi = {
 
     const depthFrames = Math.round(duration * 30)
     const artifact: StageArtifact = {
-      bag_path: `stage_${String(index).padStart(2, '0')}/capture.bag`,
+      bag_path: `stage_${String(index).padStart(2, '0')}\\capture.bag`,
       size_bytes: Math.round(duration * 17.4 * 1024 * 1024),
       duration_s: round1(duration),
       started_at: new Date(Date.now() - elapsedMs).toISOString(),

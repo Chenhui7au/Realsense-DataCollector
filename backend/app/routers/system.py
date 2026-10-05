@@ -69,16 +69,20 @@ def health(services: Services = Depends(get_services)) -> Health:
 def app_config(services: Services = Depends(get_services)) -> AppConfig:
     """Everything the pre-session screens need.
 
-    Deliberately narrow. No camera parameters, no filesystem paths. Stage text and
-    durations are only editable in the YAML, because they define the capture
-    protocol and changes should leave a trace.
+    Deliberately narrow. No camera parameters, no filesystem paths. Stage names
+    are only editable in the YAML. The per-stage description is editable on the
+    diagrams screen, so the effective value is resolved here rather than read
+    straight from the file, otherwise a guide screen opened before a session
+    exists would still show the shipped wording.
     """
     config = services.config
-    stages = [
-        StageConfig(**item)
-        for item in (config.stage_config(index) for index in config.stage_indices())
-        if item is not None
-    ]
+    stages = []
+    for index in config.stage_indices():
+        item = config.stage_config(index)
+        if item is None:
+            continue
+        item["instructions"] = services.guides.effective_instructions(index)
+        stages.append(StageConfig(**item))
     return AppConfig(
         app_title=config.app_title,
         total_stages=config.total_stages,

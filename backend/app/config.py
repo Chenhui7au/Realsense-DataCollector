@@ -66,9 +66,13 @@ class Config:
         guides = raw.get("guides") or {}
         self.guides_required: bool = bool(guides.get("required", True))
         self.guide_max_size_bytes: int = int(float(guides.get("max_size_mb", 10)) * 1024 * 1024)
+        # Default list is the shipped one in config.yaml. PNG leads it, the rest
+        # are the common formats a browser can also render back to the operator.
         self.guide_allowed_types: List[str] = list(
-            guides.get("allowed_types") or ["image/png", "image/jpeg"]
+            guides.get("allowed_types")
+            or ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif"]
         )
+        self.guide_instructions_max_length: int = int(guides.get("instructions_max_length", 500))
         self.guide_display_max_width: int = int(guides.get("display_max_width", 1600))
         self.guide_recommended_aspect: str = str(guides.get("recommended_aspect") or "4:3")
         self.guides_persist: bool = bool(guides.get("persist", True))

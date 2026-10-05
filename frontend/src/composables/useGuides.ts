@@ -108,6 +108,26 @@ export function useGuides() {
     }
   }
 
+  async function saveInstructions(index: number, text: string): Promise<{ ok: boolean; message?: string }> {
+    busyIndex.value = index
+    try {
+      const result = await api.saveGuideInstructions(index, text)
+      // The server reports the text it actually stored, which is the trimmed
+      // value, so reload rather than trusting the local draft.
+      await load()
+      toast.success(
+        result.instructions_custom ? `${result.name} description saved` : `${result.name} description reset`,
+      )
+      return { ok: true }
+    } catch (error) {
+      const { message } = describeError(error)
+      toast.danger('Description not saved', message)
+      return { ok: false, message }
+    } finally {
+      busyIndex.value = null
+    }
+  }
+
   /** Splits a drop of several files across stages by the number in the name. */
   function inferStageFromFilename(file: File): number | null {
     const match = file.name.match(/(\d{1,2})/)
@@ -131,6 +151,7 @@ export function useGuides() {
     load,
     upload,
     uploadBatch,
+    saveInstructions,
     remove,
     inferStageFromFilename,
   }

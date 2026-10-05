@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Development entry point.
 
-    /Users/ch7au/miniconda3/bin/python backend/run.py
+    python backend\\run.py
 
 Reload is on by default so edits land without a restart. Pass ``--no-reload`` on
 a rig where a restart would interrupt a guide screen, and ``--config`` to point at

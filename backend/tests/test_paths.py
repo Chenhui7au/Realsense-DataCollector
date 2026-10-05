@@ -142,6 +142,24 @@ def test_free_bytes_survives_a_missing_statvfs(tmp_path, monkeypatch):
     assert isinstance(result, int)
 
 
+# ------------------------------------------------------------- parent_of
+
+@pytest.mark.parametrize("candidate", ["/", "//", "C:\\", "C:/", "C:"])
+def test_parent_of_a_volume_root_is_none(candidate):
+    assert paths.parent_of(candidate) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX separators normalise on Windows")
+def test_parent_of_a_posix_folder_is_its_parent():
+    assert paths.parent_of("/a/b") == "/a"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="drive semantics are Windows only")
+def test_parent_of_a_folder_on_a_drive_is_the_drive_root():
+    assert paths.parent_of("D:\\work\\run1") == "D:\\work"
+    assert paths.parent_of("D:\\work") == "D:\\"
+
+
 # ---------------------------------------------------------------- names
 
 @pytest.mark.parametrize("name", ["session_a", "Run1", "a.b-c_d", "A" * 64])

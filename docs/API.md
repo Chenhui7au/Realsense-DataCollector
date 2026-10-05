@@ -1,7 +1,9 @@
 # 后端接口设计文档
 
-版本 v0.8
-日期 2026-09-21
+版本 v0.9
+日期 2026-10-05
+
+v0.9 变更点。示例路径统一为 Windows 形态，允许浏览与写入的根部默认值改为盘符。接口、字段与错误码未变。
 
 本文档描述 D435i 数据采集系统的后端接口契约、数据模型与持久化行为。系统级需求与架构见 `docs/DESIGN.md`，前端页面逻辑见 `docs/FRONTEND.md`。
 
@@ -77,6 +79,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 | `GUIDE_INVALID_IMAGE` | 400 | 文件无法解码为图像 |
 | `GUIDE_TOO_LARGE` | 413 | 文件体积超过上限 |
 | `GUIDE_UNSUPPORTED_TYPE` | 415 | 文件类型不在白名单内 |
+| `GUIDE_TEXT_TOO_LONG` | 400 | 阶段描述超过长度上限 |
 
 ---
 
@@ -111,6 +114,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 | --- | --- | --- |
 | GET | `/api/guides` | 获取示意图清单与就绪状态 |
 | POST | `/api/guides/{index}` | 上传或替换单个阶段的示意图 |
+| PUT | `/api/guides/{index}` | 写入或清空单个阶段的描述，JSON |
 | POST | `/api/guides/batch` | 批量上传多张示意图 |
 | DELETE | `/api/guides/{index}` | 删除单个阶段的示意图 |
 | GET | `/api/guides/{index}/image` | 读取示意图文件 |
@@ -154,7 +158,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
   "created_at": "2026-09-20T14:30:12+08:00",
   "status": "in_progress",
   "current_stage": 1,
-  "data_dir": "/Users/ch7au/Documents/Project_A/session_a",
+  "data_dir": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a",
   "stages": [
     {
       "index": 1,
@@ -217,7 +221,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
   "current_stage": 3,
   "saved_count": 2,
   "size_bytes": 382730240,
-  "data_dir": "/Users/ch7au/Documents/Project_A/session_a"
+  "data_dir": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a"
 }
 ```
 
@@ -234,7 +238,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 
 ```json
 {
-  "bag_path": "stage_01/capture.bag",
+  "bag_path": "stage_01\\capture.bag",
   "size_bytes": 184320512,
   "duration_s": 12.4,
   "started_at": "2026-09-20T14:31:02+08:00",
@@ -272,11 +276,25 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
   "width": 1920,
   "height": 1080,
   "uploaded_at": "2026-09-21T09:12:03+08:00",
-  "sha256": "3ab1..."
+  "sha256": "3ab1...",
+  "instructions": "将目标置于画面正中，保持静止。",
+  "instructions_custom": false
 }
 ```
 
-未配置时，`configured` 为 `false`，其余字段除 `index` 与 `name` 外全部为 `null`。
+未配置时，`configured` 为 `false`，其余字段除 `index` 与 `name` 外全部为 `null`。`instructions` 是唯一一个不随 `configured` 变化的字段，未上传示意图的阶段照样可以有自己的描述。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `instructions` | string | 引导页显示的那段操作说明，取值见下 |
+| `instructions_custom` | bool | `true` 表示该文案由采集员在界面上写过，`false` 表示来自 YAML |
+
+**描述与示意图是两件事**，各自独立编辑，互不牵连。因此有两条容易搞混的规则。
+
+- 只改描述不会让阶段变成已配置，就绪判断只看图片
+- 删除示意图不会删掉描述，重新上传后原描述仍在
+
+`instructions` 的取值规则。清单的 `instructions` 段里存了该阶段的文案时用它，否则用 YAML 阶段配置里的 `instructions`。`instructions_custom` 就是用来区分这两种来源的，界面据此显示 Custom 或 From config，并决定要不要给出 Reset。
 
 `sha256` 有两个用途。一是前端的缓存指纹，二是判断素材是否被替换过。
 
@@ -287,7 +305,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 ```json
 {
   "configured": true,
-  "root": "/Users/ch7au/Documents/Project_A",
+  "root": "C:\\Users\\ch7au\\Documents\\Project_A",
   "name": "Project_A",
   "exists": true,
   "writable": true,
@@ -316,13 +334,13 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 
 ```json
 {
-  "path": "/Users/ch7au/Documents",
-  "parent": "/Users/ch7au",
+  "path": "C:\\Users\\ch7au\\Documents",
+  "parent": "C:\\Users\\ch7au",
   "name": "Documents",
-  "home": "/Users/ch7au",
+  "home": "C:\\Users\\ch7au",
   "shortcuts": [
-    { "name": "Home", "path": "/Users/ch7au" },
-    { "name": "Documents", "path": "/Users/ch7au/Documents" }
+    { "name": "Home", "path": "C:\\Users\\ch7au" },
+    { "name": "Documents", "path": "C:\\Users\\ch7au\\Documents" }
   ],
   "readable": true,
   "writable": true,
@@ -330,8 +348,8 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
   "enough": true,
   "error": null,
   "entries": [
-    { "name": "Project_A", "path": "/Users/ch7au/Documents/Project_A", "writable": true, "is_symlink": false, "looks_like_session": false },
-    { "name": "session_a", "path": "/Users/ch7au/Documents/Project_A/session_a", "writable": true, "is_symlink": false, "looks_like_session": true }
+    { "name": "Project_A", "path": "C:\\Users\\ch7au\\Documents\\Project_A", "writable": true, "is_symlink": false, "looks_like_session": false },
+    { "name": "session_a", "path": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a", "writable": true, "is_symlink": false, "looks_like_session": true }
   ]
 }
 ```
@@ -416,7 +434,7 @@ stateDiagram-v2
   },
   "project": {
     "configured": true,
-    "root": "/Users/ch7au/Documents/Project_A",
+    "root": "C:\\Users\\ch7au\\Documents\\Project_A",
     "name": "Project_A",
     "exists": true,
     "writable": true,
@@ -439,7 +457,7 @@ stateDiagram-v2
     "current_stage": 3,
     "saved_count": 2,
     "size_bytes": 382730240,
-    "data_dir": "/Users/ch7au/Documents/Project_A/session_a"
+    "data_dir": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a"
   }
 }
 ```
@@ -493,11 +511,13 @@ stateDiagram-v2
 
 会话建立之后，阶段相关的文案与时长以会话里的阶段对象为准，见 3.2。两处的值可能不同，因为会话里的是创建时冻结的快照，而这里是实时的。前端不能把这两者混用。
 
+`stages[].instructions` 在这里给出的是**生效值**，也就是采集员在示意图配置页写过就用他写的，没写过就用 YAML 的。这样会话建立之前打开引导页看到的文案与配置页一致。
+
 `min_duration_s` 需要暴露出来，否则前端无法在录制时提示“再录一会儿”，只能等提交后报错。
 
 该接口只暴露前端需要的配置项，不含相机参数与文件路径等敏感或无关内容。
 
-阶段名称与操作说明只能改 YAML 并重启服务，它们不在界面上编辑。理由这些文案属于采集流程定义，改动应当留下痕迹，不适合在网页上随手改。
+阶段名称只能在 YAML 里改并重启服务，改动属于采集流程定义，应当留下痕迹。操作说明是例外，它能逐阶段在示意图配置页上改写，见 5.6。想批量改还是走 YAML，界面上的覆盖只是逐条调整。
 
 ### 4.3 读取项目目录
 
@@ -514,7 +534,7 @@ stateDiagram-v2
 请求体
 
 ```json
-{ "root": "/Users/ch7au/Documents/Project_A" }
+{ "root": "C:\\Users\\ch7au\\Documents\\Project_A" }
 ```
 
 服务行为。
@@ -552,7 +572,7 @@ stateDiagram-v2
 
 路径不存在时返回 404 与 `DIR_NOT_FOUND`。存在但服务无权读取时返回 403 与 `DIR_NOT_READABLE`。越出允许范围时返回 403 与 `PATH_NOT_ALLOWED`。
 
-**允许范围**。服务按配置里的 `fs.allow_roots` 决定可浏览的根部，默认为服务用户主目录、`/Volumes`、`/media`、`/mnt`。这个限制的目的是避免采集员误把项目目录指到系统目录上，而不是当成一道安全边界，因为这套服务本身不做鉴权。
+**允许范围**。服务按配置里的 `fs.allow_roots` 决定可浏览与写入的根部，默认为服务用户主目录与配置里列出的盘符，例如 `C:\` 与 `D:\`。这个限制的目的是避免采集员误把项目目录指到系统目录上，而不是当成一道安全边界，因为这套服务本身不做鉴权。
 
 越界有两种表现，前端不需要额外处理。请求一个范围内的目录时，响应的 `parent` 在到达范围根部时返回 `null`，这与文件系统根的表现完全一致，选择器的 Up 按钮因此自然变灰。请求一个范围外的目录时，直接返回 403 与 `PATH_NOT_ALLOWED`。
 
@@ -560,7 +580,7 @@ stateDiagram-v2
 
 需要注意的是这个接口只读不写，也不会创建目录。列出一个不存在的目录不会顺带把它建出来，创建只发生在 `PUT /api/project` 与 `POST /api/fs/mkdir` 两处。
 
-`path` 会被规范化，因此 `/Users/a/./b` 与 `/Users/a/b` 返回同一份结果，`..` 也会被解析掉。规范化的结果在响应的 `path` 字段里给出，前端应当用它而不是用自己请求时传的字符串。
+`path` 会被规范化，因此 `C:\Users\a\.\b` 与 `C:\Users\a\b` 返回同一份结果，`..` 也会被解析掉。规范化的结果在响应的 `path` 字段里给出，前端应当用它而不是用自己请求时传的字符串。
 
 ### 4.6 新建目录
 
@@ -571,7 +591,7 @@ stateDiagram-v2
 请求体
 
 ```json
-{ "parent": "/Users/ch7au/Documents", "name": "Project_C" }
+{ "parent": "C:\\Users\\ch7au\\Documents", "name": "Project_C" }
 ```
 
 服务行为。
@@ -587,7 +607,7 @@ stateDiagram-v2
 
 ```json
 {
-  "path": "/Users/ch7au/Documents/Project_C",
+  "path": "C:\\Users\\ch7au\\Documents\\Project_C",
   "listing": { "...": "父目录的列表对象，结构见 3.6" }
 }
 ```
@@ -631,7 +651,9 @@ stateDiagram-v2
       "width": 1920,
       "height": 1080,
       "uploaded_at": "2026-09-21T09:12:03+08:00",
-      "sha256": "3ab1..."
+      "sha256": "3ab1...",
+      "instructions": "将目标置于画面正中，保持静止。",
+      "instructions_custom": true
     },
     {
       "index": 3,
@@ -644,13 +666,15 @@ stateDiagram-v2
       "width": null,
       "height": null,
       "uploaded_at": null,
-      "sha256": null
+      "sha256": null,
+      "instructions": "从上方俯拍，保持水平距离不变。",
+      "instructions_custom": false
     }
   ]
 }
 ```
 
-`ready` 为 `true` 的条件是八个阶段全部 `configured`，且 `required` 为 `true` 时这个值才参与会话创建拦截。`missing_indices` 直接给前端做定位跳转用。
+`ready` 为 `true` 的条件是八个阶段全部 `configured`，且 `required` 为 `true` 时这个值才参与会话创建拦截。`missing_indices` 直接给前端做定位跳转用。描述写了多少不影响 `ready`，就绪只看图片。
 
 这个状态来自磁盘上的持久化清单，而不是内存里临时累积的结果。因此服务重启、机器重启、换浏览器之后，返回的都还是同一份状态。前端据此渲染主页，就能做到已配置齐全时不提示配置。
 
@@ -666,6 +690,10 @@ stateDiagram-v2
 2. 内容类型在 `allowed_types` 内，否则 415 与 `GUIDE_UNSUPPORTED_TYPE`
 3. 体积不超过 `max_size_mb`，否则 413 与 `GUIDE_TOO_LARGE`
 4. 能被图像库解码，否则 400 与 `GUIDE_INVALID_IMAGE`
+
+`allowed_types` 默认是 PNG、JPEG、WebP、BMP 与 GIF，PNG 排首位，前端的文件选择框直接取这个顺序做默认筛选。**存储时保持原格式**，不做统一转码，所以上传 WebP 得到的就是 WebP。判断依据是解码出来的真实格式而不是声明的类型，把 TIFF 改名成 `.png` 会被第 4 步拒绝。
+
+唯一例外是展示副本。它始终是 JPEG，因为引导页只需要能显示，而 JPEG 体积最小。原图带透明通道时（PNG、WebP、GIF），副本会把透明区域压到白底而不是黑底，否则透明背景的示意图会变成一片黑。
 
 全部通过后写入配置的示意图目录并更新清单。若该阶段已有示意图，则为替换语义，旧文件被覆盖。若原图宽度大于 `display_max_width`，额外生成一份展示副本供引导页使用。
 
@@ -683,12 +711,16 @@ stateDiagram-v2
   "height": 1080,
   "uploaded_at": "2026-09-21T09:12:03+08:00",
   "sha256": "3ab1...",
+  "instructions": "将目标置于画面正中，保持静止。",
+  "instructions_custom": false,
   "generated_preview": true,
   "ready": false
 }
 ```
 
 响应里带上 `ready` 与整体进度，前端上传完一张后不需要额外请求就能刷新进度条。
+
+上传只影响图片与 `generated_preview`，描述与 `instructions_custom` 原样返回，替换一张图不会改动文案。
 
 ### 5.3 批量上传
 
@@ -767,9 +799,58 @@ Content-Type: image/jpeg
 | `size` | `display` 或 `original` | 默认为 `display`，取展示副本，缺省时回退到原图 |
 | `v` | 字符串 | 内容指纹，即 `sha256` 前八位，用于刷新浏览器缓存 |
 
-响应 200 返回 `image/png` 或 `image/jpeg`。未配置时返回 404 与 `GUIDE_NOT_FOUND`。
+响应 200 返回 `image/png` 或 `image/jpeg`，也可能是 `image/webp` 或 `image/bmp` 或 `image/gif`，取决于上传时的真实格式。未配置时返回 404 与 `GUIDE_NOT_FOUND`。
 
 `v` 参数只影响缓存键，服务端不校验它的取值。
+
+### 5.6 设置阶段描述
+
+`PUT /api/guides/{index}`
+
+写入引导页显示的那段操作说明。这一步与示意图上传分开，因为两者是两件事，各自独立编辑，谁也不覆盖谁。
+
+请求为 JSON，不是 multipart，因为它不带二进制。
+
+```json
+{ "instructions": "将目标置于画面正中，保持静止，距离约零点五米。" }
+```
+
+服务行为。
+
+1. `index` 在阶段范围内，否则 404 与 `STAGE_NOT_FOUND`
+2. 去掉首尾空白后长度不超过 `guides.instructions_max_length`，否则 400 与 `GUIDE_TEXT_TOO_LONG`
+3. 非空则写入清单的 `instructions` 段，空则删除该条目，也就是恢复 YAML 的默认文案
+4. 更新清单并返回该阶段的完整条目
+
+**空值即重置**，这是刻意的，界面上的 Reset 按钮走的就是这条路，因此不需要第二个接口。
+
+写入前不必先有示意图。描述与图片互不依赖，未上传图片的阶段照样可以先写文案，`instructions_custom` 与 `configured` 因此在返回里可能一个是 `true` 一个是 `false`。
+
+响应 200 返回更新后的示意图条目，结构与 3.4 一致，另外带上进度。
+
+```json
+{
+  "index": 1,
+  "name": "正面平视",
+  "configured": false,
+  "image_url": null,
+  "original_filename": null,
+  "content_type": null,
+  "size_bytes": null,
+  "width": null,
+  "height": null,
+  "uploaded_at": null,
+  "sha256": null,
+  "instructions": "将目标置于画面正中，保持静止，距离约零点五米。",
+  "instructions_custom": true,
+  "ready": false,
+  "uploaded": 0
+}
+```
+
+**它不影响就绪判断**。`ready` 与 `uploaded` 只统计图片，写了描述不会让一个阶段变得已配置。返回里带上它们只是为了前端能在同一次响应后刷新进度条。
+
+**与已建立会话的关系**。会话创建时会冻结一份阶段快照，含当时生效的文案，见 8.4。因此改描述只影响**之后新建**的会话，正在进行中的会话仍显示它创建时的那一份，这是刻意的，避免采集员录到一半发现引导页文案被改了。
 
 ---
 
@@ -785,7 +866,7 @@ Content-Type: image/jpeg
 
 ```json
 {
-  "project_root": "/Users/ch7au/Documents/Project_A",
+  "project_root": "C:\\Users\\ch7au\\Documents\\Project_A",
   "sessions": [
     {
       "session_id": "20260920-143012-a1b2",
@@ -796,7 +877,7 @@ Content-Type: image/jpeg
       "current_stage": 8,
       "saved_count": 8,
       "size_bytes": 1623453696,
-      "data_dir": "/Users/ch7au/Documents/Project_A/session_a"
+      "data_dir": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a"
     }
   ]
 }
@@ -866,7 +947,7 @@ Content-Type: image/jpeg
 响应 200
 
 ```json
-{ "session_id": "20260920-143012-a1b2", "deleted": true, "removed_dir": "/Users/ch7au/Documents/Project_A/session_a" }
+{ "session_id": "20260920-143012-a1b2", "deleted": true, "removed_dir": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a" }
 ```
 
 磁盘目录被删除是不可逆操作，前端必须二次确认。为避免误删，也可以只把会话标记为废弃而不真正删除文件，是否采用由部署时的清理策略决定。
@@ -937,7 +1018,7 @@ Content-Type: image/jpeg
   "stage_index": 1,
   "state": "recording",
   "started_at": "2026-09-20T14:31:02+08:00",
-  "bag_abs_path": "/Users/ch7au/Documents/Project_A/session_a/stage_01/capture.bag",
+  "bag_abs_path": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a\\stage_01\\capture.bag",
   "auto_stop_at_s": 60
 }
 ```
@@ -973,7 +1054,7 @@ Content-Type: image/jpeg
   "stage_index": 1,
   "state": "saved",
   "artifact": {
-    "bag_path": "stage_01/capture.bag",
+    "bag_path": "stage_01\\capture.bag",
     "size_bytes": 184320512,
     "duration_s": 12.4,
     "started_at": "2026-09-20T14:31:02+08:00",
@@ -1083,6 +1164,8 @@ Content-Type: image/jpeg
 
 清单文件放在示意图目录下，是唯一的索引，记录每个阶段的原始文件名、内容类型、体积、像素尺寸、上传时间与内容指纹。展示副本以 `.display.` 中缀命名，与原件共存，原件永不丢失。
 
+采集员写的阶段描述也存在这一份清单里，放在与 `stages` 平级的 `instructions` 段，而不是嵌进各个阶段条目。这样做的理由是描述与图片是两件独立的事，删除或替换图片时不该连带丢掉文案。
+
 ```json
 {
   "version": 1,
@@ -1099,11 +1182,16 @@ Content-Type: image/jpeg
       "sha256": "3ab1...",
       "uploaded_at": "2026-09-21T09:12:03+08:00"
     }
+  },
+  "instructions": {
+    "1": "将目标置于画面正中，保持静止，距离约零点五米。"
   }
 }
 ```
 
-写入采用先写临时文件再原子重命名的方式。若服务在写入过程中被终止，清单不会变成半截内容，最多是本次上传未生效。同时备份上一版为 `manifest.json.bak`，便于极端情况下回滚。
+`instructions` 段里没有的阶段就用 YAML 的默认文案，因此这一段的缺失与为空是完全等价的，不需要迁移。条目里的值必须是字符串，其他类型在载入时被丢弃并记日志。
+
+清单用 UTF-8 写入且不做 ASCII 转义，中文直接以原文落盘，便于人工查看与编辑。写入采用先写临时文件再原子重命名的方式。若服务在写入过程中被终止，清单不会变成半截内容，最多是本次上传未生效。同时备份上一版为 `manifest.json.bak`，便于极端情况下回滚。
 
 `version` 字段用于迁移。升级后若发现版本低于当前支持的版本，则在启动时做一次迁移并写回新版本。只要数据目录不被删除，代码更新不会导致重新配置。
 
@@ -1115,18 +1203,19 @@ Content-Type: image/jpeg
 2. 读取设置文件，取得采集员上次配置的项目目录。不存在则用 YAML 的初始值，都没设则为未配置
 3. 校验项目目录，不存在则创建，并探测可写性与剩余空间
 4. 读取示意图清单。不存在则视为全部未配置，并按配置决定是否尝试从目录下的文件重建
-5. 逐条校验清单条目指向的文件是否真实存在，缺失的移除并记告警
+5. 校验清单条目指向的文件是否真实存在，缺失的移除并记告警。描述条目独立处理，指向不存在或超出阶段范围的一律丢弃，不影响图片
 6. 校验清单的 `version` 字段，低于当前版本则执行迁移并写回
-7. 把有效的阶段配置载入内存，供接口直接读取
+7. 把有效的阶段配置与描述载入内存，供接口直接读取
 8. 扫描项目目录，恢复未完成会话的状态，保证重启后能继续
 
-清单与实际文件可能因为人为误删而不一致，第五种与第六种情况是给手工拷贝素材留的后路，对应下面这张表。
+清单与实际文件可能因为人为误删而不一致，第五种情况是给手工拷贝素材留的后路，对应下面这张表。
 
 | 情况 | 处理 |
 | --- | --- |
 | 清单条目存在，文件也在 | 正常载入 |
 | 清单条目存在，文件缺失 | 移除该条目并记入告警日志，该阶段回到未配置 |
 | 清单不存在，但目录下有符合命名规则的文件 | 按阶段序号重建清单并记入日志 |
+| 描述条目的阶段序号越界或值不是字符串 | 丢弃该条并记入日志，图片与就绪状态不受影响 |
 | 清单的 `version` 低于当前版本 | 执行迁移并写回 |
 | 设置文件里的项目目录不存在 | 创建它，失败则标记为不可用并保留原值 |
 | 设置文件存在但内容损坏 | 记告警，回退到 YAML 的初始值，不阻止服务启动 |
@@ -1148,7 +1237,7 @@ Content-Type: image/jpeg
 {
   "version": 1,
   "updated_at": "2026-09-21T09:12:03+08:00",
-  "project_root": "/Users/ch7au/Documents/Project_A"
+  "project_root": "C:\\Users\\ch7au\\Documents\\Project_A"
 }
 ```
 
@@ -1169,7 +1258,7 @@ Content-Type: image/jpeg
   settings.json
   settings.json.bak
   guides/
-    manifest.json
+    manifest.json        # 图片条目与采集员写的阶段描述
     manifest.json.bak
     stage_01.png
     stage_01.display.jpg

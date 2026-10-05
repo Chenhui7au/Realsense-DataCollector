@@ -14,6 +14,8 @@ from ..errors import ApiError
 from ..models import (
     GuideBatchResult,
     GuideDeleteResult,
+    GuideUpdateBody,
+    GuideUpdateResult,
     GuideUploadResult,
     GuidesResponse,
 )
@@ -113,6 +115,26 @@ async def upload_guide(
         data=data,
     )
     return GuideUploadResult(**result)
+
+
+@router.put("/guides/{index}", response_model=GuideUpdateResult)
+def update_guide(
+    index: int,
+    body: GuideUpdateBody,
+    services: Services = Depends(get_services),
+) -> GuideUpdateResult:
+    """Set or clear the description that goes with a stage's diagram.
+
+    JSON, not multipart, because this carries no bytes. Sending an empty string
+    clears the override so the stage falls back to the YAML instructions, which
+    is also the reset action. The diagram itself is untouched, and the endpoint
+    works for a stage whose diagram is not uploaded yet.
+    """
+    result = services.guides.set_instructions(index, body.instructions)
+    readiness = services.guides.readiness()
+    result["ready"] = readiness["ready"]
+    result["uploaded"] = readiness["uploaded"]
+    return GuideUpdateResult(**result)
 
 
 @router.delete("/guides/{index}", response_model=GuideDeleteResult)

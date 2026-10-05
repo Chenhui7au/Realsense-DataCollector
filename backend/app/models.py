@@ -194,6 +194,10 @@ class GuideEntry(BaseModel):
     height: Optional[int] = None
     uploaded_at: Optional[str] = None
     sha256: Optional[str] = None
+    # Effective description: the operator's own text when they wrote one, the
+    # stage instructions from the YAML otherwise.
+    instructions: str = ""
+    instructions_custom: bool = False
 
 
 class GuidesResponse(BaseModel):
@@ -208,6 +212,17 @@ class GuidesResponse(BaseModel):
 class GuideUploadResult(GuideEntry):
     generated_preview: bool = False
     ready: bool = False
+
+
+class GuideUpdateBody(BaseModel):
+    """Body of ``PUT /api/guides/{index}``. Empty clears the override."""
+
+    instructions: Optional[str] = None
+
+
+class GuideUpdateResult(GuideEntry):
+    ready: bool = False
+    uploaded: int = 0
 
 
 class GuideUploadFailure(BaseModel):

@@ -2,7 +2,7 @@
 
 Run with the conda base interpreter, from the repository root:
 
-    /Users/ch7au/miniconda3/bin/python -m pytest backend/tests -q
+    python -m pytest backend/tests -q
 
 Every test builds a throwaway config in a tmp directory, so nothing touches the
 real service directory and the suite can run on a machine with no camera.
@@ -67,7 +67,14 @@ def write_config(
         "guides": {
             "required": True,
             "max_size_mb": 1,
-            "allowed_types": ["image/png", "image/jpeg"],
+            "allowed_types": [
+                "image/png",
+                "image/jpeg",
+                "image/webp",
+                "image/bmp",
+                "image/gif",
+            ],
+            "instructions_max_length": 500,
             "display_max_width": 1600,
             "persist": True,
             "rebuild_from_dir": True,
@@ -124,6 +131,14 @@ def png_bytes(width: int = 40, height: int = 30, color=(120, 30, 200)) -> bytes:
 def jpeg_bytes(width: int = 40, height: int = 30) -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (width, height), (10, 200, 40)).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def image_bytes(pillow_format: str, width: int = 40, height: int = 30) -> bytes:
+    """Encode a small solid image in one of the accepted formats."""
+    mode = "RGBA" if pillow_format in {"PNG", "WEBP", "GIF"} else "RGB"
+    buffer = io.BytesIO()
+    Image.new(mode, (width, height), (20, 90, 160)).save(buffer, format=pillow_format)
     return buffer.getvalue()
 
 
@@ -235,6 +250,8 @@ def test_guide_entry_matches_the_documented_field_set(client):
         "height",
         "uploaded_at",
         "sha256",
+        "instructions",
+        "instructions_custom",
     }
     assert set(client.get("/api/guides").json()["guides"][0]) == expected
 
@@ -614,10 +631,19 @@ def test_replacing_with_the_other_format_removes_the_old_file(client, env):
 
 def test_upload_rejects_a_bad_declared_type(client):
     response = client.post(
-        "/api/guides/1", files={"file": ("a.gif", b"GIF89a", "image/gif")}
+        "/api/guides/1", files={"file": ("a.tiff", b"II*\x00", "image/tiff")}
     )
     assert response.status_code == 415
     assert response.json()["error"]["code"] == "GUIDE_UNSUPPORTED_TYPE"
+
+
+def test_a_mislabelled_but_accepted_format_is_stored_under_its_real_type(client):
+    """A wrong declared type is not fatal when the bytes really are acceptable."""
+    response = client.post(
+        "/api/guides/1", files={"file": ("photo.gif", jpeg_bytes(), "image/gif")}
+    )
+    assert response.status_code == 200
+    assert response.json()["content_type"] == "image/jpeg"
 
 
 def test_upload_rejects_an_oversized_file(client, env):
@@ -637,9 +663,15 @@ def test_upload_rejects_undecodable_bytes(client):
 
 
 def test_upload_rejects_a_real_image_in_the_wrong_container(client):
-    """A JPEG labelled image/png passes the declared type check, then fails."""
+    """A JPEG labelled image/png passes the declared type check, then fails.
+
+    Renaming alone does not get a rejected format past the decode step, and a
+    GIF is no longer a convenient stand-in for "rejected" now that it is accepted.
+    """
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 30), (5, 5, 5)).save(buffer, format="TIFF")
     response = client.post(
-        "/api/guides/1", files={"file": ("lie.png", jpeg_bytes(), "image/gif")}
+        "/api/guides/1", files={"file": ("lie.png", buffer.getvalue(), "image/png")}
     )
     assert response.status_code == 415
 
@@ -724,6 +756,164 @@ def test_missing_image_is_a_404(client):
     response = client.get("/api/guides/4/image")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "GUIDE_NOT_FOUND"
+
+
+# ------------------------------------------------------- guide descriptions
+
+def test_description_defaults_to_the_yaml_instructions(client):
+    entry = client.get("/api/guides").json()["guides"][0]
+    assert entry["instructions"] == "Do the thing for stage 1."
+    assert entry["instructions_custom"] is False
+
+
+def test_description_can_be_written_without_a_diagram(client):
+    """The text and the image are independent, either may come first."""
+    response = client.put("/api/guides/3", json={"instructions": "Kneel and hold still."})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configured"] is False
+    assert body["instructions"] == "Kneel and hold still."
+    assert body["instructions_custom"] is True
+    # Readiness still tracks images only, a written description is not a diagram.
+    assert body["uploaded"] == 0
+
+
+def test_description_overrides_the_config_endpoint(client):
+    client.put("/api/guides/2", json={"instructions": "Stand further back."})
+    stages = client.get("/api/config").json()["stages"]
+    assert stages[1]["instructions"] == "Stand further back."
+    assert stages[0]["instructions"] == "Do the thing for stage 1."
+
+
+def test_description_survives_a_restart(env):
+    with TestClient(create_app(env["config"])) as first:
+        first.put("/api/guides/1", json={"instructions": "Written before the restart."})
+
+    with TestClient(create_app(env["config"])) as second:
+        assert second.get("/api/guides").json()["guides"][0]["instructions"] == (
+            "Written before the restart."
+        )
+        assert second.get("/api/config").json()["stages"][0]["instructions"] == (
+            "Written before the restart."
+        )
+
+
+def test_an_empty_description_clears_the_override(client):
+    client.put("/api/guides/1", json={"instructions": "Temporary wording."})
+    response = client.put("/api/guides/1", json={"instructions": "   "})
+    assert response.status_code == 200
+    assert response.json()["instructions"] == "Do the thing for stage 1."
+    assert response.json()["instructions_custom"] is False
+
+
+def test_description_is_trimmed(client):
+    response = client.put("/api/guides/1", json={"instructions": "  Padded. \n"})
+    assert response.json()["instructions"] == "Padded."
+
+
+def test_an_over_long_description_is_rejected(client):
+    response = client.put("/api/guides/1", json={"instructions": "x" * 501})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "GUIDE_TEXT_TOO_LONG"
+
+
+def test_description_index_must_be_a_stage(client):
+    response = client.put("/api/guides/99", json={"instructions": "Nowhere."})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "STAGE_NOT_FOUND"
+
+
+def test_removing_the_diagram_keeps_the_description(client):
+    """The two fields are edited separately, so one must not discard the other."""
+    client.post("/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")})
+    client.put("/api/guides/1", json={"instructions": "Keep me."})
+
+    client.delete("/api/guides/1")
+
+    entry = client.get("/api/guides").json()["guides"][0]
+    assert entry["configured"] is False
+    assert entry["instructions"] == "Keep me."
+
+
+def test_replacing_the_diagram_keeps_the_description(client):
+    client.put("/api/guides/1", json={"instructions": "Keep me too."})
+    client.post("/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")})
+    assert client.get("/api/guides").json()["guides"][0]["instructions"] == "Keep me too."
+
+
+def test_manifest_stores_descriptions_outside_the_stage_entries(client, env):
+    client.post("/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")})
+    client.put("/api/guides/1", json={"instructions": "Written by the operator."})
+
+    manifest = json.loads((env["base"] / "var" / "guides" / "manifest.json").read_text())
+    assert manifest["instructions"] == {"1": "Written by the operator."}
+    assert "instructions" not in manifest["stages"]["1"]
+
+
+# ---------------------------------------------------------- accepted formats
+
+@pytest.mark.parametrize(
+    "fmt,mime",
+    [
+        ("PNG", "image/png"),
+        ("JPEG", "image/jpeg"),
+        ("WEBP", "image/webp"),
+        ("BMP", "image/bmp"),
+        ("GIF", "image/gif"),
+    ],
+)
+def test_common_image_formats_are_accepted(client, fmt, mime):
+    response = client.post(
+        "/api/guides/1", files={"file": (f"a.{fmt.lower()}", image_bytes(fmt), mime)}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["content_type"] == mime
+    assert body["configured"] is True
+
+
+def test_png_leads_the_default_accepted_type_list(tmp_path):
+    """PNG is the expected format, so a config that omits the list still leads
+    with it. The picker shows the first entry by default."""
+    library = tmp_path / "library"
+    library.mkdir()
+    config_path = write_config(tmp_path, allow_roots=[str(library)])
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    del payload["guides"]["allowed_types"]
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    assert load_config(config_path).guide_allowed_types[0] == "image/png"
+
+
+def test_the_shipped_config_leads_with_png():
+    """The deployment file must agree with the code default."""
+    shipped = BACKEND_DIR / "config" / "config.yaml"
+    assert load_config(shipped).guide_allowed_types[0] == "image/png"
+
+
+def test_a_replaced_diagram_does_not_leave_the_other_extension_behind(client, env):
+    guides_dir = env["base"] / "var" / "guides"
+    client.post("/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")})
+    client.post("/api/guides/1", files={"file": ("a.jpg", jpeg_bytes(), "image/jpeg")})
+
+    assert not (guides_dir / "stage_01.png").exists()
+    assert (guides_dir / "stage_01.jpg").is_file()
+
+
+def test_a_transparent_diagram_is_flattened_onto_white(client, env):
+    """The display copy is always JPEG, so alpha has to become something."""
+    wide = Image.new("RGBA", (2000, 1000), (0, 0, 0, 0))
+    buffer = io.BytesIO()
+    wide.save(buffer, format="PNG")
+
+    client.post("/api/guides/1", files={"file": ("a.png", buffer.getvalue(), "image/png")})
+
+    display = env["base"] / "var" / "guides" / "stage_01.display.jpg"
+    assert display.is_file()
+    with Image.open(display) as image:
+        # Top left pixel is fully transparent in the source. On black it would
+        # read as 0, so a white value is the proof the flatten worked.
+        assert image.getpixel((0, 0)) == (255, 255, 255)
 
 
 def test_image_response_is_cacheable(client):

@@ -15,6 +15,8 @@ Four decisions worth naming.
   beside it with ``.display.`` in the name.
 * On replace, a stale file with the other extension is removed, otherwise a PNG
   replaced by a JPEG would leave the PNG reachable through ``size=original``.
+* The per-stage description lives in the same manifest but outside the ``stages``
+  map, so removing a diagram does not throw away the text that goes with it.
 """
 
 from __future__ import annotations
@@ -42,6 +44,10 @@ log = logging.getLogger(__name__)
 MANIFEST_VERSION = 1
 MANIFEST_NAME = "manifest.json"
 DISPLAY_INFIX = ".display."
+# Top level manifest key holding the operator written descriptions, as a map of
+# stage index to text. Deliberately a sibling of "stages" and not a field inside
+# an entry: the text outlives the image, so deleting a diagram keeps it.
+INSTRUCTIONS_KEY = "instructions"
 # Quality for the guide screen copy. Not in the YAML because it is not something
 # an operator needs to tune, it only trades bytes for smoothness on a projector.
 DISPLAY_JPEG_QUALITY = 85
@@ -49,10 +55,30 @@ DISPLAY_JPEG_QUALITY = 85
 # Pillow format name -> MIME type. Only these may be stored. A file whose
 # declared type is on the whitelist but whose real format is not gets rejected,
 # so the manifest never claims a content type the bytes do not have.
-FORMAT_TO_MIME = {"PNG": "image/png", "JPEG": "image/jpeg"}
-MIME_TO_EXTENSION = {"image/png": ".png", "image/jpeg": ".jpg"}
+#
+# PNG is the expected format. The rest are the common ones a browser can render
+# back to the operator; TIFF and SVG are absent on purpose, the first does not
+# display in browsers and the second cannot be verified by decoding it.
+FORMAT_TO_MIME = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "BMP": "image/bmp",
+    "GIF": "image/gif",
+}
+MIME_TO_EXTENSION = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+}
+# Every extension an original may carry. Used to sweep the other one on replace.
+ALL_EXTENSIONS = tuple(MIME_TO_EXTENSION.values())
 
-_STAGE_FILE_RE = re.compile(r"^stage_(\d{1,2})\.(png|jpe?g)$", re.IGNORECASE)
+_STAGE_FILE_RE = re.compile(
+    r"^stage_(\d{1,2})\.(png|jpe?g|webp|bmp|gif)$", re.IGNORECASE
+)
 
 
 class GuideStore:
@@ -68,6 +94,8 @@ class GuideStore:
         self.lock = threading.RLock()
         # index -> manifest entry. The only in-memory source of truth.
         self._entries: Dict[int, Dict[str, Any]] = {}
+        # index -> operator written description. Absent means "use the YAML".
+        self._instructions: Dict[int, str] = {}
 
     # --------------------------------------------------------------- startup
 
@@ -77,6 +105,7 @@ class GuideStore:
             self.root.mkdir(parents=True, exist_ok=True)
             raw, from_disk = self._read_manifest()
             entries = self._parse_entries(raw)
+            instructions = self._parse_instructions(raw)
             dirty = from_disk is False
 
             # Branch two: an entry whose file vanished. Drop it and say so,
@@ -103,6 +132,7 @@ class GuideStore:
                     dirty = True
 
             self._entries = entries
+            self._instructions = instructions
             if dirty:
                 self._write_manifest()
 
@@ -148,6 +178,28 @@ class GuideStore:
             entries[index] = value
         return entries
 
+    def _parse_instructions(self, raw: Dict[str, Any]) -> Dict[int, str]:
+        """Read the description map, discarding anything that is not a string.
+
+        A manifest written before descriptions existed simply has no key, which
+        is why the field needs no migration: an empty map means every stage falls
+        back to the instructions in the YAML.
+        """
+        stored = raw.get(INSTRUCTIONS_KEY)
+        if not isinstance(stored, dict):
+            return {}
+        instructions: Dict[int, str] = {}
+        for key, value in stored.items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                continue
+            if not self.config.has_stage(index) or not isinstance(value, str):
+                continue
+            text = value.strip()
+            if text:
+                instructions[index] = text
+        return instructions
     def _entry_files_present(self, entry: Dict[str, Any]) -> bool:
         original = entry.get("file")
         if not isinstance(original, str) or not original:
@@ -241,7 +293,10 @@ class GuideStore:
         """One guide entry. Unconfigured stages carry nulls, not empty strings."""
         stage = self.config.stage_config(index)
         name = stage["name"] if stage else str(index)
+        default_instructions = stage["instructions"] if stage else ""
         entry = self._entries.get(index)
+        override = self._instructions.get(index)
+        instructions = override if override else default_instructions
         if entry is None:
             return {
                 "index": index,
@@ -255,6 +310,8 @@ class GuideStore:
                 "height": None,
                 "uploaded_at": None,
                 "sha256": None,
+                "instructions": instructions,
+                "instructions_custom": override is not None,
             }
         return {
             "index": index,
@@ -268,7 +325,56 @@ class GuideStore:
             "height": entry.get("height"),
             "uploaded_at": entry.get("uploaded_at"),
             "sha256": entry.get("sha256"),
+            "instructions": instructions,
+            "instructions_custom": override is not None,
         }
+
+    def set_instructions(self, index: int, text: Optional[str]) -> Dict[str, Any]:
+        """Store or clear the description for one stage.
+
+        An empty value clears the override instead of storing an empty string, so
+        the stage falls back to the YAML instructions again. That doubles as the
+        reset action, which is why there is no separate endpoint for it.
+
+        docs/API.md section 5.6. Nothing here touches a project directory: this is
+        the same service side store as the diagrams.
+        """
+        if not self.config.has_stage(index):
+            raise ApiError(
+                "STAGE_NOT_FOUND",
+                detail={"stage_index": index, "total_stages": self.config.total_stages},
+            )
+
+        cleaned = (text or "").strip()
+        limit = self.config.guide_instructions_max_length
+        if len(cleaned) > limit:
+            raise ApiError(
+                "GUIDE_TEXT_TOO_LONG",
+                f"Keep the description to {limit} characters or fewer.",
+                detail={"index": index, "length": len(cleaned), "max_length": limit},
+            )
+
+        with self.lock:
+            if cleaned:
+                self._instructions[index] = cleaned
+            else:
+                self._instructions.pop(index, None)
+            self._write_manifest()
+            result = self._guide_object(index)
+
+        log.info(
+            "guide %d description %s", index, "set" if cleaned else "cleared"
+        )
+        return result
+
+    def effective_instructions(self, index: int) -> str:
+        """Text a guide screen should show. Override when set, YAML otherwise."""
+        with self.lock:
+            override = self._instructions.get(index)
+            if override:
+                return override
+            stage = self.config.stage_config(index)
+            return stage["instructions"] if stage else ""
 
     def file_for(self, index: int, size: str = "display") -> Tuple[Path, str, str]:
         """Resolve the file to serve. Returns path, content type and sha256."""
@@ -381,8 +487,8 @@ class GuideStore:
                 stale = self.root / f"stage_{index:02d}{DISPLAY_INFIX}jpg"
                 self._unlink_quietly(stale)
 
-            # Remove the other extension's original if this replace changed type.
-            for other_ext in (".png", ".jpg"):
+            # Remove the other extensions' originals if this replace changed type.
+            for other_ext in ALL_EXTENSIONS:
                 if other_ext == extension:
                     continue
                 self._unlink_quietly(self.root / f"stage_{index:02d}{other_ext}")
@@ -461,7 +567,7 @@ class GuideStore:
                 self._unlink_quietly(self.root / display)
             # Also sweep leftovers so a hand managed directory does not keep a
             # file that the manifest no longer knows about.
-            for pattern in (".png", ".jpg", f"{DISPLAY_INFIX}jpg"):
+            for pattern in (*ALL_EXTENSIONS, f"{DISPLAY_INFIX}jpg"):
                 self._unlink_quietly(self.root / f"stage_{index:02d}{pattern}")
 
             self._write_manifest()
@@ -478,11 +584,21 @@ class GuideStore:
     # --------------------------------------------------------------- helpers
 
     def _write_display_copy(self, source: Path, mime: str) -> str:
-        """Downscale for the guide screen. Returns the created file's name."""
+        """Downscale for the guide screen. Returns the created file's name.
+
+        The copy is always JPEG, which has no alpha channel. A transparent source
+        (PNG, WebP, GIF) is flattened onto white rather than black, so a diagram
+        drawn on a transparent background still reads as a drawing.
+        """
         index = int(_STAGE_FILE_RE.match(source.name).group(1))
         destination = self.root / f"stage_{index:02d}{DISPLAY_INFIX}jpg"
         with Image.open(source) as image:
-            converted = image.convert("RGB")
+            if image.mode in ("RGBA", "LA", "P"):
+                rgba = image.convert("RGBA")
+                converted = Image.new("RGB", rgba.size, (255, 255, 255))
+                converted.paste(rgba, mask=rgba.split()[-1])
+            else:
+                converted = image.convert("RGB")
             ratio = self.config.guide_display_max_width / float(converted.width)
             target_size = (
                 self.config.guide_display_max_width,
@@ -504,6 +620,9 @@ class GuideStore:
             "version": MANIFEST_VERSION,
             "updated_at": self._now(),
             "stages": {str(index): entry for index, entry in sorted(self._entries.items())},
+            INSTRUCTIONS_KEY: {
+                str(index): text for index, text in sorted(self._instructions.items())
+            },
         }
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -564,6 +683,7 @@ class GuideStore:
             return {
                 "root": str(self.root),
                 "configured": sorted(self._entries.keys()),
+                "customised": sorted(self._instructions.keys()),
                 "persist": self.config.guides_persist,
                 "backup_present": self.backup_path.is_file(),
             }

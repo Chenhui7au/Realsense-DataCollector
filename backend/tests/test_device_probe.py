@@ -112,8 +112,12 @@ def test_enumerator_reports_elevation_and_platform():
     """The parent cannot know either of these, so the child has to say them."""
     module = _load_enumerator()
     assert isinstance(module._elevated(), bool)
-    # Elevated here means euid 0, which is what the service should report on.
-    assert module._elevated() == (os.geteuid() == 0)
+    if os.name == "nt":
+        # Windows has no euid, so the child always reports not elevated.
+        assert module._elevated() is False
+    else:
+        # Elevated here means euid 0, which is what the service should report on.
+        assert module._elevated() == (os.geteuid() == 0)
 
 
 @pytest.mark.parametrize(

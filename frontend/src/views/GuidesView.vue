@@ -18,9 +18,13 @@ const {
   load,
   upload,
   uploadBatch,
+  saveInstructions,
   remove,
   inferStageFromFilename,
 } = useGuides()
+
+/** Mirrors guides.instructions_max_length in the shipped YAML. */
+const INSTRUCTIONS_MAX_LENGTH = 500
 
 const cardErrors = ref(new Map<number, string>())
 const pageDragging = ref(false)
@@ -37,6 +41,19 @@ async function onCardPick(index: number, file: File) {
   cardErrors.value = next
 
   const result = await upload(index, file)
+  if (!result.ok && result.message) {
+    const failed = new Map(cardErrors.value)
+    failed.set(index, result.message)
+    cardErrors.value = failed
+  }
+}
+
+async function onCardDescribe(index: number, text: string) {
+  const next = new Map(cardErrors.value)
+  next.delete(index)
+  cardErrors.value = next
+
+  const result = await saveInstructions(index, text)
   if (!result.ok && result.message) {
     const failed = new Map(cardErrors.value)
     failed.set(index, result.message)
@@ -115,8 +132,9 @@ async function onPageDrop(event: DragEvent) {
         <p class="label">Setup</p>
         <h1 class="display">Stage diagrams</h1>
         <p class="page-lede">
-          One pose diagram per stage, shown as a reminder before each recording. They are stored on
-          the host and reused for every session, so this is a one time job.
+          One pose diagram per stage, shown as a reminder before each recording. Each stage also
+          carries the description the collector reads there. Both are stored on the host and reused
+          for every session, so this is a one time job.
         </p>
       </div>
 
@@ -137,8 +155,9 @@ async function onPageDrop(event: DragEvent) {
       All {{ total }} diagrams are configured. You can start a session whenever you are ready.
     </p>
     <p v-else class="wash wash--warn">
-      {{ missingCount }} of {{ total }} diagrams still need an image. Drop a PNG or JPEG onto a card,
-      or drop several at once and name them <span class="mono">stage_01.png</span> and so on.
+      {{ missingCount }} of {{ total }} diagrams still need an image. Drop one onto a card, or drop
+      several at once and name them <span class="mono">stage_01.png</span> and so on. Descriptions
+      can be written at any time, a stage does not need an image for that.
     </p>
 
     <div class="grid">
@@ -150,15 +169,18 @@ async function onPageDrop(event: DragEvent) {
         :busy="busyIndex === entry.index || batchBusy"
         :error="cardErrors.get(entry.index) ?? null"
         :highlight="!ready"
+        :max-length="INSTRUCTIONS_MAX_LENGTH"
         @pick="(file) => onCardPick(entry.index, file)"
+        @describe="(text) => onCardDescribe(entry.index, text)"
         @remove="onCardRemove(entry.index)"
       />
     </div>
 
     <footer class="foot">
       <p class="foot__note">
-        Accepted formats are PNG and JPEG, up to 10 MB each. Images wider than 1600 px are rescaled
-        for display, the original is kept as well.
+        PNG is the expected format. JPEG, WebP, BMP and GIF work too, up to 10 MB each. Images wider
+        than 1600 px are rescaled for display, the original is kept as well. Clearing a description
+        restores the wording from the service configuration.
       </p>
       <AppButton variant="primary" size="lg" @click="$router.push({ name: 'home' })">
         {{ ready ? 'Back to home' : 'Save and return home' }}

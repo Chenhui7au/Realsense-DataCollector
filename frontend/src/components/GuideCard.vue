@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { GuideEntry } from '@/api'
 import { formatBytes, formatDateTime, stageNumber } from '@/utils/format'
 import AppButton from './AppButton.vue'
@@ -10,14 +10,33 @@ const props = defineProps<{
   busy: boolean
   error?: string | null
   highlight?: boolean
+  maxLength: number
 }>()
 
-const emit = defineEmits<{ pick: [File]; remove: [] }>()
+const emit = defineEmits<{ pick: [File]; remove: []; describe: [string] }>()
 
 const input = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
+const draft = ref(props.entry.instructions)
+
+/*
+ * The server is the source of truth for the stored text, so the draft follows
+ * every refresh. That also means a rejected save is reflected rather than left
+ * showing wording that was never accepted.
+ */
+watch(
+  () => props.entry.instructions,
+  (value) => {
+    draft.value = value
+  },
+)
 
 const configured = computed(() => props.entry.configured)
+const customised = computed(() => props.entry.instructions_custom)
+const trimmed = computed(() => draft.value.trim())
+const dirty = computed(() => trimmed.value !== props.entry.instructions)
+const empty = computed(() => trimmed.value.length === 0)
+const overLong = computed(() => trimmed.value.length > props.maxLength)
 
 function openPicker() {
   if (!props.busy) {
@@ -41,6 +60,23 @@ function onDrop(event: DragEvent) {
   if (file) {
     emit('pick', file)
   }
+}
+
+function save() {
+  if (dirty.value && !overLong.value) {
+    emit('describe', trimmed.value)
+  }
+}
+
+/** Clears the override so the stage falls back to the wording in the config. */
+function reset() {
+  draft.value = ''
+  emit('describe', '')
+}
+
+/** Reverts an unsaved edit without touching what is stored. */
+function undo() {
+  draft.value = props.entry.instructions
 }
 </script>
 
@@ -119,6 +155,54 @@ function onDrop(event: DragEvent) {
 
     <p v-if="error" class="gcard__error">{{ error }}</p>
 
+    <div class="gcard__desc">
+      <div class="gcard__desc-head">
+        <label :for="`guide-desc-${entry.index}`">Description</label>
+        <span v-if="customised" class="gcard__tag">Custom</span>
+        <span v-else class="gcard__tag gcard__tag--default">From config</span>
+      </div>
+      <textarea
+        :id="`guide-desc-${entry.index}`"
+        v-model="draft"
+        class="gcard__desc-input"
+        rows="4"
+        :maxlength="maxLength"
+        :disabled="busy"
+        placeholder="What the collector should do for this stage."
+        @keydown.ctrl.enter.prevent="save"
+      />
+      <div class="gcard__desc-foot">
+        <span class="gcard__count" :class="{ 'gcard__count--over': overLong }">
+          {{ trimmed.length }} / {{ maxLength }}
+        </span>
+        <span class="gcard__desc-actions">
+          <AppButton v-if="dirty" size="sm" variant="ghost" :disabled="busy" @click="undo">
+            Undo
+          </AppButton>
+          <AppButton
+            v-if="customised"
+            size="sm"
+            variant="ghost"
+            :disabled="busy || dirty || empty"
+            @click="reset"
+          >
+            Reset
+          </AppButton>
+          <AppButton
+            size="sm"
+            variant="secondary"
+            :disabled="busy || !dirty || overLong"
+            @click="save"
+          >
+            Save
+          </AppButton>
+        </span>
+      </div>
+      <p v-if="overLong" class="gcard__error">
+        Keep the description to {{ maxLength }} characters or fewer.
+      </p>
+    </div>
+
     <footer class="gcard__foot">
       <AppButton size="sm" variant="secondary" :disabled="busy" @click="openPicker">
         {{ configured ? 'Replace' : 'Upload' }}
@@ -138,7 +222,7 @@ function onDrop(event: DragEvent) {
       ref="input"
       class="gcard__input"
       type="file"
-      accept="image/png,image/jpeg"
+      accept="image/png,image/jpeg,image/webp,image/bmp,image/gif"
       @change="onFileChosen"
     />
   </article>
@@ -309,6 +393,79 @@ function onDrop(event: DragEvent) {
   border-radius: var(--r-xs);
   padding: var(--s2) var(--s3);
   margin-bottom: var(--s3);
+}
+
+.gcard__desc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin-bottom: var(--s4);
+}
+
+.gcard__desc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  font-size: var(--t-xs);
+  color: var(--ink-400);
+}
+
+.gcard__tag {
+  font-size: var(--t-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  background: var(--saved-bg);
+  color: var(--saved-fg);
+}
+
+.gcard__tag--default {
+  background: var(--surface-sunken);
+  color: var(--ink-400);
+}
+
+.gcard__desc-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--surface);
+  color: var(--ink-900);
+  font-family: inherit;
+  font-size: var(--t-xs);
+  line-height: 1.45;
+}
+
+.gcard__desc-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-wash);
+}
+
+.gcard__desc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.gcard__desc-actions {
+  display: flex;
+  gap: var(--s1);
+}
+
+.gcard__count {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-300);
+}
+
+.gcard__count--over {
+  color: var(--danger);
 }
 
 .gcard__foot {

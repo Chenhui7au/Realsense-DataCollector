@@ -5,11 +5,7 @@ Run this before the service when standing up a new rig or a new machine. It
 answers three questions in one shot, is the camera reachable, what does the SDK
 think it is, and which stream profiles does it advertise.
 
-    # macOS 12 and newer. libusb has to displace the system UVC driver.
-    sudo /Users/ch7au/miniconda3/bin/python backend/tools/probe_camera.py
-
-    # Linux
-    /Users/ch7au/miniconda3/bin/python backend/tools/probe_camera.py
+    python backend\\tools\\probe_camera.py
 
 Why the probe is a separate script rather than something the service does. The
 service must never claim the camera just to report on it, see the note in

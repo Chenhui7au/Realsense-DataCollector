@@ -140,6 +140,10 @@ export interface GuideEntry {
   height: number | null
   uploaded_at: string | null
   sha256: string | null
+  /** Operator wording when set, otherwise the stage instructions from the YAML. */
+  instructions: string
+  /** True when the text above came from the guides screen rather than the YAML. */
+  instructions_custom: boolean
 }
 
 export interface GuidesResponse {
@@ -154,6 +158,11 @@ export interface GuidesResponse {
 export interface GuideUploadResult extends GuideEntry {
   generated_preview: boolean
   ready: boolean
+}
+
+export interface GuideUpdateResult extends GuideEntry {
+  ready: boolean
+  uploaded: number
 }
 
 export interface GuideUploadFailure {
@@ -298,6 +307,8 @@ export interface CaptureApi {
   guides(): Promise<GuidesResponse>
   uploadGuide(index: number, file: File): Promise<GuideUploadResult>
   uploadGuidesBatch(files: Map<number, File>): Promise<GuideBatchResult>
+  /** Writes the description that goes with a stage. An empty value resets it. */
+  saveGuideInstructions(index: number, instructions: string): Promise<GuideUpdateResult>
   deleteGuide(index: number): Promise<GuideDeleteResult>
   guideImageUrl(index: number, sha256: string | null, size?: 'display' | 'original'): string
 

@@ -5,7 +5,7 @@ This is the escalation step after ``enumerate_devices.py`` reports ``permission`
 It answers the next question, is something else holding the USB interface, and
 does releasing it fix the problem.
 
-    sudo /Users/ch7au/miniconda3/bin/python backend/tools/diagnose_access.py
+    python backend\\tools\\diagnose_access.py
 
 On macOS the usual culprit is ``VDCAssistant``, the CoreMediaIO helper that opens
 UVC cameras on behalf of the system. The D435i advertises UVC interfaces for its

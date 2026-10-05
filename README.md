@@ -4,7 +4,7 @@
 
 采集员用浏览器访问，按引导走完八个阶段。每个阶段先看一张姿态示意图，再进入采集页录制一条。八条录完结束本轮，可以再开新一轮。数据按 `<项目目录>/<会话名称>/` 归档，方便人工整理与交接。
 
-当前进度。前端已完成并实测通过。后端已完成接口一览 2.1 至 2.4 四组，也就是基础、项目目录、目录浏览与示意图，共十二个接口，已对着前端逐字段实测。会话、录制与预览需要相机，尚未实现，这些路径暂时返回 501 与 `NOT_IMPLEMENTED`，代码在 `backend/app/routers/pending.py`。
+当前进度。前端已完成并实测通过。后端已完成接口一览 2.1 至 2.4 四组，也就是基础、项目目录、目录浏览与示意图，共十三个接口，已对着前端逐字段实测。会话、录制与预览需要相机，尚未实现，这些路径暂时返回 501 与 `NOT_IMPLEMENTED`，代码在 `backend/app/routers/pending.py`。
 
 ---
 
@@ -187,7 +187,7 @@ backend/var/
   settings.json        采集员在界面上改的项目目录，优先级高于 YAML 的 default_root
   settings.json.bak
   guides/
-    manifest.json      示意图清单，唯一的索引
+    manifest.json      示意图清单与阶段描述，唯一的索引
     manifest.json.bak
     logs/app.log
 ```
@@ -230,21 +230,16 @@ python backend\tools\probe_camera.py --profiles
 
 连不上、需要逐步定位时用诊断脚本 `backend/tools/diagnose_access.py`，`--no-kill` 可以跳过占用进程清理，直接看基线失败。
 
-### 两个平台的差别
+### 采集主机
 
-官方的验证环境是 Windows 10 与 Ubuntu 的 x86 NUC 机器，原文见 `doc/support-matrix.md`，这两者是受支持的组合。
+采集主机只支持 **Windows 10 与 11**。它也是官方验证过的平台之一，原文见 `doc/support-matrix.md`。
 
-| 平台 | 安装方式 | 前置条件 | 已知限制 |
-| --- | --- | --- | --- |
-| Windows 10 与 11 | 下载 `RealSense.SDK.exe`，一路点下一步 | 无。插上 USB3 口即可在设备管理器看到 | RealSense Viewer 可用 |
-| Ubuntu 20 至 26 LTS | 加源安装，或从源码编 | 跑一次 `scripts/setup_udev_rules.sh` 装 udev 规则 | 内核补丁**现在是可选的**，见下 |
+安装方式只有一条。下载 `RealSense.SDK.exe`，一路点下一步，装完插上相机就能用。插上 USB3 口后能在设备管理器里看到相机，RealSense Viewer 也可以直接打开，没有额外的权限或规则要配。
 
-Windows 这一条最省事。装完 SDK 插上相机就能用，没有额外的权限或规则要配，采集现场推荐用它。
+一条必须遵守的约束。**不要装在虚拟机里**，官方文档写明不支持，原因是 USB 3.0 在虚拟机里有转换层，真要试他们只推荐 VMware 而不是 VirtualBox。
 
-Linux 那一条值得说清楚，因为它推翻了旧印象。官方安装文档原话大意是，多数 RealSense 相机已被发行版原装内核完整支持，包括逐帧元数据，**不需要打补丁**，只有尚未被发行版内核识别的较新机型才需要。
-D435i 不是新机型，所以「Linux 要编内核模块、还可能被 BIOS 锁住」这条顾虑基本不成立。脚本名叫 `patch-realsense-ubuntu-lts-hwe.sh`，但文档明确标了 optional。
+Linux 与 macOS 不在本项目的目标平台内。官方也支持 Ubuntu，但本项目的部署、脚本与文档都以 Windows 为准，未在 Windows 上验证过的路径不保证可用。
 
-两个平台都有的约束。**不要装在虚拟机里**，官方文档写明不支持，原因是 USB 3.0 在虚拟机里有转换层，真要试他们只推荐 VMware 而不是 VirtualBox。
 主机侧与交换机无关的一条是 USB 链路速率，见上一节。
 
 ### 与操作系统无关的一条
@@ -384,4 +379,8 @@ TypeScript 被升到了 7。降回 5，`npm install -D typescript@5`。
 
 **示意图上传被拒，说文件是别的格式**
 
-服务按文件真实内容判断格式，不看扩展名。把 GIF 改名成 `.png` 会被拒，报 `GUIDE_UNSUPPORTED_TYPE`。
+服务按文件真实内容判断格式，不看扩展名。PNG、JPEG、WebP、BMP 与 GIF 都接受，TIFF 与 SVG 不接受，把 TIFF 改名成 `.png` 会被拒，报 `GUIDE_UNSUPPORTED_TYPE`。反过来，声明类型写错但真实格式在列表内的文件会被正常存下，存的是它真实的格式。
+
+**阶段描述保存不了**
+
+先看输入框右下角的字数，超过 500 会转红并禁用保存，这时后端也会拒绝并报 `GUIDE_TEXT_TOO_LONG`。想恢复配置文件里的默认文案，点 Reset 清空即可。

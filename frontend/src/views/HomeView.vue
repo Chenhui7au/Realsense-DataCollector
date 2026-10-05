@@ -265,7 +265,7 @@ async function onDiscard() {
                 type="text"
                 autocomplete="off"
                 spellcheck="false"
-                placeholder="/Users/ch7au/Documents/Project_A"
+                placeholder="C:\capture\Project_A"
                 :aria-invalid="Boolean(projectError)"
                 :disabled="savingProject"
                 @input="projectTouched = true"

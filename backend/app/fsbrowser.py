@@ -45,21 +45,20 @@ class FsBrowser:
     # -------------------------------------------------------------- range
 
     def allowed_roots(self) -> List[str]:
-        """Configured roots plus the project directory currently in use."""
+        """Configured roots plus the project directory currently in use.
+
+        The shipped Windows config lists the drives capture data may live on, so
+        this is exactly the configured range. Adding every existing drive
+        automatically was rejected: it made the picker offer folders that
+        ``PUT /api/project`` then refused, because that check only ever used
+        ``fs.allow_roots``. docs/API.md section 4.5 promises the two use the same
+        range.
+        """
         roots: List[str] = []
         for root in self.config.allow_roots + self.project.allowed_extra_roots():
             normalized = paths.normalize(root)
             if normalized and normalized not in roots:
                 roots.append(normalized)
-        # On Windows the Unix mount points in the shipped config do not exist, so
-        # without this the picker could never leave the user profile. Existing
-        # drive roots are treated as in range for the same reason the configured
-        # project root is, see docs/API.md section 4.5.
-        if os.name == "nt":
-            for drive in string.ascii_uppercase:
-                candidate = paths.normalize(f"{drive}:\\")
-                if os.path.isdir(candidate) and candidate not in roots:
-                    roots.append(candidate)
         return roots
 
     def is_allowed(self, path: str) -> bool:

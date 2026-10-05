@@ -17,7 +17,7 @@ with a deadline.
 
 Output contract, exactly one JSON object on the last line of stdout.
 
-    {"ok": true, "devices": [...], "elevated": true, "platform": "darwin"}
+    {"ok": true, "devices": [...], "elevated": true, "platform": "win32"}
     {"ok": false, "kind": "permission", "error": "...", "elevated": true, ...}
 
 The child reports facts, the parent turns them into advice. ``elevated`` matters

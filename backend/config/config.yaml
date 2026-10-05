@@ -4,9 +4,10 @@
 # from the web interface live in <paths.service_dir>/settings.json instead and
 # take priority over the defaults here. See docs/DESIGN.md for the full schema.
 #
-# Stage names and instructions are only editable here, then restart the service.
-# They define the capture protocol, so they are deliberately not editable from
-# the browser.
+# Stage names are only editable here, then restart the service. The per-stage
+# description can also be written on the diagrams screen, which stores it in
+# <paths.guide_root>/manifest.json and overrides the instructions below.
+# They define the capture protocol, so the YAML value stays the shipped default.
 
 app:
   # Shown as the heading on every screen.
@@ -46,19 +47,26 @@ fs:
   # Roots the folder picker may browse and write under. This keeps the operator
   # from pointing the project directory at a system location. It is not a
   # security boundary, the service does not authenticate anyone.
-  # The currently configured project directory is always treated as in range,
-  # so tightening this never locks out the folder already in use.
+  # The capture host runs Windows, so these are drive letters. List the volumes
+  # capture data may live on. The currently configured project directory is
+  # always treated as in range, so tightening this never locks out the folder
+  # already in use.
   allow_roots:
     - "~"
-    - "/Volumes"
-    - "/media"
-    - "/mnt"
+    - "C:\\"
+    - "D:\\"
 
 guides:
   # When false, missing diagrams only warn and do not block a new round.
   required: true
   max_size_mb: 10
-  allowed_types: ["image/png", "image/jpeg"]
+  # PNG is the expected format and leads the file dialog filter, but the common
+  # web image formats are accepted too. The stored file keeps its own format, so
+  # nothing is silently re-encoded.
+  allowed_types: ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif"]
+  # Upper bound on the per-stage description the operator writes on the diagrams
+  # screen. It overrides the stage instructions from this file.
+  instructions_max_length: 500
   # Originals wider than this get a downscaled copy for the guide screen.
   display_max_width: 1600
   recommended_aspect: "4:3"
