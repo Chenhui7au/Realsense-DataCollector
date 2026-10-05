@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.vscode/
+
+# Service runtime data. Regenerated on start, and never part of the source tree.
+# The settings file records a machine specific project path and the guides are
+# per rig diagrams, so neither belongs in version control.
+backend/var/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Editors and OS
+.DS_Store
+*.swp
+.idea/

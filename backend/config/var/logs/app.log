@@ -1,0 +1,9 @@
+2026-09-21 11:36:55 INFO    app.main: config file       /Users/ch7au/Workspace/Realsense/backend/config/config.yaml
+2026-09-21 11:36:55 INFO    app.main: stage 1: Front, level, max 30s
+2026-09-21 11:36:55 INFO    app.main: stage 2: Front left, 45 degrees, max 30s
+2026-09-21 11:36:55 INFO    app.main: stage 3: Front right, 45 degrees, max 30s
+2026-09-21 11:36:55 INFO    app.main: stage 4: Elevated, 30 degrees, max 30s
+2026-09-21 11:36:55 INFO    app.main: stage 5: Depressed, 30 degrees, max 30s
+2026-09-21 11:36:55 INFO    app.main: stage 6: Close range, 30 cm, max 30s
+2026-09-21 11:36:55 INFO    app.main: stage 7: Far range, 150 cm, max 30s
+2026-09-21 11:36:55 INFO    app.main: stage 8: Orbit sweep, max 30s

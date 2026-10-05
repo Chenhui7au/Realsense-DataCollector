@@ -1,0 +1,33 @@
+# Backend dependencies. The project runs on the conda base interpreter, so this
+# file is a record of what must be present, not a virtualenv recipe.
+#
+# Verified present in conda base on 2026-09-21:
+#   Python  3.10.14
+#   fastapi 0.116.1
+#   uvicorn 0.35.0
+#   pydantic 2.12.5
+#   PyYAML  6.0.1
+#   Pillow  10.3.0
+#   python-multipart 0.0.20  (required by FastAPI for multipart uploads)
+
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.6
+PyYAML>=6.0
+Pillow>=10.0
+python-multipart>=0.0.9
+
+# Imported lazily by app.device, through a child process. The service starts and
+# every non camera endpoint works with this absent.
+#
+# Linux and Windows: install the official wheel.
+#   pip install pyrealsense2
+#
+# macOS: Intel does not publish a wheel for it, only the community build below.
+# Measured on this project, that build does not work reliably, it segfaults while
+# opening the device regardless of privileges. See the camera section of README.md
+# before spending time on it. Develop on macOS with camera.probe set to false and
+# do the real capture on Linux or Windows.
+#   pip install pyrealsense2-macosx
+#
+# pyrealsense2>=2.55

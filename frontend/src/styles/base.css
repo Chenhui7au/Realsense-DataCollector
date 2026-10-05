@@ -1,0 +1,298 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink-900);
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.shell {
+  width: 100%;
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: 0 var(--s5);
+}
+
+.page {
+  padding: var(--s7) 0 var(--s9);
+}
+
+.page--tight {
+  padding-top: var(--s5);
+}
+
+/* ------------------------------------------------------------ typography */
+
+.display {
+  font-family: var(--font-display);
+  font-size: var(--t-2xl);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1.06;
+}
+
+.page-lede {
+  color: var(--ink-500);
+  font-size: var(--t-md);
+  max-width: 56ch;
+  margin-top: var(--s3);
+}
+
+/* Small uppercase field label, the instrument-panel tell */
+.label {
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-400);
+}
+
+/* Every number, identifier, timestamp and byte count uses the mono face */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
+}
+
+.mono-lg {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-lg);
+  letter-spacing: -0.01em;
+}
+
+.muted {
+  color: var(--ink-500);
+}
+
+.dim {
+  color: var(--ink-400);
+}
+
+/* ---------------------------------------------------------------- blocks */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s4) var(--s5);
+  border-bottom: 1px solid var(--line);
+}
+
+.card-body {
+  padding: var(--s5);
+}
+
+.card-title {
+  font-size: var(--t-md);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.card-hint {
+  font-size: var(--t-sm);
+  color: var(--ink-500);
+}
+
+/* Small status chip used in card headers */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: var(--r-full);
+  padding: 3px var(--s3);
+  background: var(--idle-bg);
+  color: var(--idle-fg);
+}
+
+.chip--on {
+  background: var(--saved-bg);
+  color: var(--saved-fg);
+}
+
+.chip--off {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.chip--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.divider {
+  height: 1px;
+  background: var(--line);
+  border: 0;
+  margin: 0;
+}
+
+/* Definition rows used across the status cards */
+.spec {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--s2) var(--s5);
+  align-items: baseline;
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.spec:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.spec > dt {
+  font-size: var(--t-sm);
+  color: var(--ink-500);
+}
+
+.spec > dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------- ribbons */
+
+.wash {
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s3) var(--s4);
+  font-size: var(--t-sm);
+  color: var(--ink-700);
+}
+
+.wash--danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+.wash--warn {
+  background: var(--warn-bg);
+  border-color: #ecd9b4;
+  color: var(--warn);
+}
+
+/* ---------------------------------------------------------------- motion */
+
+/*
+ * Enter-only fade, applied by class rather than by a Vue <Transition>.
+ *
+ * A Vue transition finishes a leave by advancing from the `-leave-from` class
+ * to `-leave-to` inside a double requestAnimationFrame. When frames are
+ * throttled, which happens whenever the page is not actually being painted,
+ * that callback never runs. The element then stays in the DOM forever holding
+ * its leave-from state, and because these are modals it blocks the whole UI.
+ *
+ * An animation on mount gives the same fade in with no bookkeeping, and removal
+ * is a plain DOM removal that cannot fail.
+ */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.fade-in {
+  animation: fade-in var(--dur) var(--ease);
+}
+
+.rise-in {
+  animation: rise-in var(--dur) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

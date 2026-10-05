@@ -1,0 +1,100 @@
+/*
+ * Design tokens.
+ *
+ * Direction is a restrained instrument panel: warm-neutral paper, crisp white
+ * surfaces, hairline rules instead of heavy shadows, and exactly one accent.
+ * Nothing here should draw attention to itself. The camera feed is the only
+ * saturated thing on screen.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Ink ramp */
+  --ink-900: #14181b;
+  --ink-700: #3d454c;
+  --ink-500: #6a737b;
+  --ink-400: #8d959c;
+  --ink-300: #aab1b7;
+
+  /* Surfaces */
+  --bg: #f1f2f3;
+  --surface: #ffffff;
+  --surface-sunken: #f7f8f9;
+  --surface-hover: #f0f2f2;
+
+  /* Hairlines */
+  --line: #e4e7e9;
+  --line-strong: #ccd2d6;
+
+  /* Single accent, a deep instrument teal */
+  --accent: #14544e;
+  --accent-hover: #0e423e;
+  --accent-ink: #ffffff;
+  --accent-wash: #e7f0ee;
+  --accent-line: #bcd4d0;
+
+  /* Stage states */
+  --idle-fg: #6a737b;
+  --idle-bg: #f0f2f2;
+  --rec-fg: #9e3a13;
+  --rec-bg: #fcefe7;
+  --rec-line: #eecdb9;
+  --saved-fg: #1a6144;
+  --saved-bg: #e8f3ec;
+
+  /* Feedback */
+  --danger: #a5211a;
+  --danger-bg: #fbebe9;
+  --danger-line: #f0cbc7;
+  --warn: #83570a;
+  --warn-bg: #fbf2e0;
+
+  /* Radii, kept tight so the panel reads as hardware, not as a toy */
+  --r-xs: 3px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-full: 999px;
+
+  /* Elevation, used sparingly */
+  --shadow-1: 0 1px 2px rgba(20, 24, 27, 0.05);
+  --shadow-2: 0 8px 24px -12px rgba(20, 24, 27, 0.2);
+  --shadow-3: 0 32px 72px -24px rgba(20, 24, 27, 0.32);
+
+  /* Space scale */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+  --s9: 96px;
+
+  /* Type */
+  --font-display: 'Instrument Serif', 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+  --font-ui: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --t-2xs: 0.6875rem;
+  --t-xs: 0.75rem;
+  --t-sm: 0.8125rem;
+  --t-base: 0.9375rem;
+  --t-md: 1.0625rem;
+  --t-lg: 1.375rem;
+  --t-xl: 1.75rem;
+  --t-2xl: clamp(2.125rem, 1.5rem + 2.4vw, 3rem);
+
+  /* Motion, short and unshowy */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 320ms;
+
+  /* Layout */
+  --shell-max: 1240px;
+  --header-h: 60px;
+  --rail-h: 4px;
+}

@@ -1,0 +1,138 @@
+# Service configuration.
+#
+# This file is the deployment time source of truth. Values the operator changes
+# from the web interface live in <paths.service_dir>/settings.json instead and
+# take priority over the defaults here. See docs/DESIGN.md for the full schema.
+#
+# Stage names and instructions are only editable here, then restart the service.
+# They define the capture protocol, so they are deliberately not editable from
+# the browser.
+
+app:
+  # Shown as the heading on every screen.
+  title: "D435i Capture"
+  host: "127.0.0.1"
+  port: 8000
+  # Origins allowed to call /api when the frontend is served from another
+  # origin. Development uses the Vite proxy and production is same origin, so
+  # neither needs this. It exists so a direct cross port call is not silently
+  # blocked by the browser.
+  cors_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
+
+paths:
+  # Relative paths resolve against this file, not against the shell's working
+  # directory, so the service finds the same data no matter where it was started
+  # from. ".." therefore lands in the backend directory. Absolute paths are
+  # recommended for deployment.
+  #
+  # Where the service keeps its own files. Capture data does NOT live here, it
+  # lives under the project directory set from the home screen.
+  service_dir: "../var"
+  guide_root: "../var/guides"
+  log_dir: "../var/logs"
+  settings_file: "../var/settings.json"
+
+project:
+  # Initial project directory. Only used when no settings.json exists. Empty
+  # means the home screen asks the operator to pick one on first run.
+  default_root: ""
+  # A project directory must have at least this much free space to be usable.
+  min_free_space_gb: 5
+  require_writable: true
+
+fs:
+  # Roots the folder picker may browse and write under. This keeps the operator
+  # from pointing the project directory at a system location. It is not a
+  # security boundary, the service does not authenticate anyone.
+  # The currently configured project directory is always treated as in range,
+  # so tightening this never locks out the folder already in use.
+  allow_roots:
+    - "~"
+    - "/Volumes"
+    - "/media"
+    - "/mnt"
+
+guides:
+  # When false, missing diagrams only warn and do not block a new round.
+  required: true
+  max_size_mb: 10
+  allowed_types: ["image/png", "image/jpeg"]
+  # Originals wider than this get a downscaled copy for the guide screen.
+  display_max_width: 1600
+  recommended_aspect: "4:3"
+  # Debug only. When false the manifest stays in memory and is lost on restart.
+  persist: true
+  # Rebuild manifest entries from files already sitting in the guide directory.
+  rebuild_from_dir: true
+  # Keep the previous manifest as manifest.json.bak before each write.
+  keep_backup: true
+
+camera:
+  # Set to false to stop the service touching the camera at all. It then always
+  # reports no device. Useful when only working on the frontend, and used by the
+  # test suite so it needs no hardware.
+  probe: true
+  # Empty means use the first device found.
+  serial: ""
+  reset_on_session_end: false
+  preview:
+    width: 640
+    height: 480
+    fps: 15
+    jpeg_quality: 80
+  recording:
+    min_duration_s: 1
+    max_duration_s: 300
+    colorize_depth: false
+    # Still to be confirmed with the end user, particularly whether the second
+    # infrared stream is needed. Changing this section is enough, no code change.
+    streams:
+      depth:      { width: 848, height: 480, format: z16, fps: 30 }
+      color:      { width: 640, height: 480, format: bgr8, fps: 30 }
+      infrared_1: { width: 848, height: 480, format: y8,  fps: 30 }
+      infrared_2: { width: 848, height: 480, format: y8,  fps: 30 }
+      accel:      { format: motion_xyz32f, fps: 63 }
+      gyro:       { format: motion_xyz32f, fps: 200 }
+
+storage:
+  compress_bag: false
+  # When false a finished round is deleted as soon as it completes.
+  keep_finished_sessions: true
+
+# Stage count is not hardcoded. The service counts this list at startup and
+# refuses to boot if indices are not unique and contiguous starting at one.
+stages:
+  - index: 1
+    name: "Front, level"
+    instructions: "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take."
+    max_duration_s: 30
+  - index: 2
+    name: "Front left, 45 degrees"
+    instructions: "Orbit 45 degrees to the left, keeping height and distance unchanged. The subject should stay fully inside the frame."
+    max_duration_s: 30
+  - index: 3
+    name: "Front right, 45 degrees"
+    instructions: "Orbit 45 degrees to the right from the starting position, keeping height and distance unchanged."
+    max_duration_s: 30
+  - index: 4
+    name: "Elevated, 30 degrees"
+    instructions: "Raise the camera to look down on the subject by about 30 degrees. Keep the same 60 cm distance to the subject surface."
+    max_duration_s: 30
+  - index: 5
+    name: "Depressed, 30 degrees"
+    instructions: "Lower the camera to look up at the subject by about 30 degrees. Watch for glare from overhead lighting and shade the lens if needed."
+    max_duration_s: 30
+  - index: 6
+    name: "Close range, 30 cm"
+    instructions: "Move in to roughly 30 cm. This is close to the minimum working distance, so the frame will be tight. Avoid cropping the subject edges."
+    max_duration_s: 30
+  - index: 7
+    name: "Far range, 150 cm"
+    instructions: "Withdraw to roughly 150 cm. Keep the subject centred and confirm the depth readout is still populated before you start."
+    max_duration_s: 30
+  - index: 8
+    name: "Orbit sweep"
+    instructions: "While recording, orbit steadily around the subject through a full turn. Keep the subject centred and hold a constant angular speed. Aim for one complete revolution per take."
+    max_duration_s: 30
