@@ -1,4 +1,4 @@
-"""D435i capture service backend.
+"""RealSense Data-Collector service backend.
 
 The contract implemented here is docs/API.md. Anything the frontend relies on is
 documented there first, then in ``models.py``, then in the route.

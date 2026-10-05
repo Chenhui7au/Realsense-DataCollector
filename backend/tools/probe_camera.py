@@ -29,10 +29,14 @@ import argparse
 import os
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-DEFAULT_LOG = Path("/tmp/realsense-probe.log")
+# The system temp directory, not a hardcoded "/tmp". That literal is drive
+# relative on Windows, so it resolved to <current drive>:\tmp\... which usually
+# does not exist, and the SDK then wrote no log at all without saying so.
+DEFAULT_LOG = Path(tempfile.gettempdir()) / "realsense-probe.log"
 TIMEOUT_S = 25
 
 # SIGALRM and os.geteuid are POSIX only. Guarded so this script still runs on

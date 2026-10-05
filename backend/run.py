@@ -23,7 +23,7 @@ DEFAULT_CONFIG = BACKEND_DIR / "config" / "config.yaml"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the D435i capture service.")
+    parser = argparse.ArgumentParser(description="Run the RealSense Data-Collector service.")
     parser.add_argument(
         "--config",
         default=str(DEFAULT_CONFIG),

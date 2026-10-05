@@ -1,5 +1,5 @@
 {
-  "name": "d435i-capture-web",
+  "name": "realsense-data-collector-web",
   "private": true,
   "version": "0.4.0",
   "type": "module",

@@ -1,10 +1,10 @@
-# D435i Capture
+﻿# RealSense Data-Collector
 
 浏览器端的数据采集工具，通过 Intel RealSense D435i 分八个阶段录制原始数据，每轮采集落盘为一组 RealSense bag 文件。
 
 采集员用浏览器访问，按引导走完八个阶段。每个阶段先看一张姿态示意图，再进入采集页录制一条。八条录完结束本轮，可以再开新一轮。数据按 `<项目目录>/<会话名称>/` 归档，方便人工整理与交接。
 
-当前进度。前端已完成并实测通过。后端已完成接口一览 2.1 至 2.4 四组，也就是基础、项目目录、目录浏览与示意图，共十三个接口，已对着前端逐字段实测。会话、录制与预览需要相机，尚未实现，这些路径暂时返回 501 与 `NOT_IMPLEMENTED`，代码在 `backend/app/routers/pending.py`。
+当前进度。前端已完成并实测通过。后端接口已全部实现，共十四组路径，覆盖基础、项目目录、目录浏览、示意图、会话、录制与预览，并已在真机 D435i（SDK 2.58，固件 5.17.3.10，USB 3.2）上跑通完整一轮八阶段采集。服务在示意图目录为空时会自动画好八个阶段的默认示意图与说明，所以一台刚装好的机器不需要任何手工准备就能直接走完一轮。需要相机的那几组在无相机时按契约返回 503 与 `DEVICE_NOT_FOUND`，不再有 501。
 
 ---
 
@@ -14,11 +14,11 @@
 | --- | --- | --- |
 | Node.js | 20 以上 | 实测 v24.14.1 |
 | npm | 10 以上 | 实测 11.11.0 |
-| Python | 3.10 | 实测 conda base 环境，命令行直接用 `python` |
+| Python | 3.12 以上 | 实测 conda base 环境 Python 3.14.7，命令行直接用 `python` |
 | 采集主机 | Windows 10 或 11 | 官方验证过的平台，装好 RealSense SDK 后即可用，见下面相机一节 |
-| 相机 | D435i | 只影响会话、录制、预览三组接口与设备探测，其余十二个接口不需要相机 |
+| 相机 | D435i | 只有会话、录制、预览三组接口与设备探测需要相机，其余十一组路径在无相机时也全部可用 |
 
-Python 直接用 conda 的 base 环境，不要为本项目建虚拟环境。依赖是 FastAPI、Uvicorn、PyYAML、Pillow 与 python-multipart，base 里都有。
+Python 直接用 conda 的 base 环境，不要为本项目建虚拟环境。依赖是 FastAPI、Uvicorn、PyYAML、Pillow、python-multipart 与 pyrealsense2，base 里都有。
 
 有一处版本约束要注意。`fastapi` 与 `starlette` 必须成对匹配，当前可用组合是 `fastapi 0.141.1` 配 `starlette 1.0.0`。曾在 base 里遇到过 `fastapi 0.116.1` 配 `starlette 1.0.0` 的组合，服务会当场起不来，`pip check` 会报冲突。装依赖后跑一次 `pip check` 确认。
 
@@ -81,47 +81,23 @@ npm --prefix frontend run build
 
 ---
 
-## 模拟后端与真实后端
+## 前端与后端
 
-前端有两个后端实现，编译期由 `VITE_USE_MOCK` 决定用哪个。用别名切换而不是运行时判断，目的是让模拟代码彻底不进生产包。
+前端只有一个后端实现，`frontend/src/api/real.ts`，走 HTTP 请求 `/api`。开发时 Vite 把 `/api` 转发到 `http://127.0.0.1:8000`，生产时由服务自己托管构建产物，两条路径用的是同一个客户端。
 
-| 取值 | 后端 | 用途 |
-| --- | --- | --- |
-| `true` | `src/api/mock.ts` | 浏览器内模拟，无相机无服务也能跑 |
-| `false` | `src/api/real.ts` | 请求 `/api`，由 Vite 代理转发到后端 |
-
-默认值写在环境文件里。
-
-- `frontend/.env.development` 是 `true`，所以 `npm run dev` 默认走模拟
-- `frontend/.env.production` 是 `false`，所以 `npm run build` 固定走真实接口
-
-模拟模式下界面右上角会显示一个 `Mock` 徽标。看到它就说明当前没有真实数据，不要让采集员在这种状态下工作。
-
-### 临时切到真实后端
-
-不用改文件，命令行覆盖即可。
+**因此 `npm run dev` 需要后端已经跑起来。**
 
 ```powershell
-cd frontend
-$env:VITE_USE_MOCK="false"
-npm run dev
+# 终端一，后端
+python backend\run.py
+
+# 终端二，前端
+npm --prefix frontend run dev
 ```
 
-### 永久切到真实后端
+后端换了主机或端口，改 `frontend/vite.config.ts` 里的 `server.proxy` 段。
 
-改 `frontend/.env.development` 这一行，然后重启开发服务器。
-
-```text
-VITE_USE_MOCK=false
-```
-
-### 代理配置
-
-Vite 把 `/api` 转发到 `http://127.0.0.1:8000`。后端换了主机或端口，改 `frontend/vite.config.ts` 里的 `server.proxy` 段。
-
-### 模拟模式的限制
-
-模拟后端的状态全在内存里，浏览器整页刷新会清空。于是有两件事没法在模拟模式下验证，需要真实后端才能测。刷新后恢复会话，以及示意图与项目目录设置跨重启保留。
+早先这里有一个浏览器内的模拟后端，用编译期开关切换，为的是在没有相机、后端还没写的情况下评审界面。后端接口已经全部实现并在真机上验证过，模拟实现与真实实现的差异反而成了负担，已删除。
 
 ---
 
@@ -189,10 +165,25 @@ backend/var/
   guides/
     manifest.json      示意图清单与阶段描述，唯一的索引
     manifest.json.bak
-    logs/app.log
+    stage_01.png       阶段示意图原件，扩展名随实际格式
+    stage_01.display.jpg  超过 display_max_width 时生成的展示副本
+  logs/app.log
 ```
 
 `backend/var/` 不进版本库。它记的是本机路径与本机素材，换台机器重配就行。
+
+### 默认示意图
+
+新建一轮要求八个阶段的示意图全部配置好，这对生产线是对的，但会让一台刚装好的机器什么都做不了，除非先手工做好八张图。所以 `guides.seed_defaults` 默认开启，服务在**示意图目录还是空的时候**为每个阶段画一张示意图出来。
+
+画出来的是一张示意图而不是照片，俯视视角标出相机方位、与目标的距离，右上角一个小侧视图标出俯仰，底部写出方位角、俯仰角与距离三个数值，并带一个 `DEFAULT` 角标。采到真图之后在示意图页面上逐张替换即可，替换走的是和手工上传完全相同的那条路。
+
+只有目录里什么都没有时才会种入。一旦存在过清单或图片，服务就不再自动补，所以你删掉某一张换成真图之后它不会在下次重启冒回来。要让整套图恢复，删掉 `backend/var/guides/` 再重启。要彻底关掉这项，把开关设成 false。
+
+```yaml
+guides:
+  seed_defaults: false
+```
 
 ### 日常开发两个终端
 
@@ -200,15 +191,23 @@ backend/var/
 # 终端一，后端
 python backend\run.py
 
-# 终端二，前端，切到真实接口
-$env:VITE_USE_MOCK="false"; npm --prefix frontend run dev
+# 终端二，前端，经 Vite 代理访问后端
+npm --prefix frontend run dev
 ```
 
-### 还没实现的部分
+### 相机与硬件相关的实现要点
 
-会话、录制、预览三组接口需要相机，也依赖会话状态机，尚未实现。这十四条路径现在返回 501 与 `NOT_IMPLEMENTED`，前端会把它当成可读的提示而不是未知错误。
+以下几条是照着官方文档写会踩坑、在真机上实测后才定下来的，改 `backend/config/config.yaml` 的 `camera.recording` 段之前值得先读一遍。
 
-返回 501 的路径集中在 `backend/app/routers/pending.py`，一条路由一行。实现一组就删一行，没有别处引用这个模块。
+- **录制文件必须是 `.db3` 扩展名。** `enable_record_to_file` 会直接拒绝其他扩展名并报 "Output file must have .db3 extension"，所以盘上的名字是 `stage_01/capture.db3`。`.db3` 能被 realsense-viewer 打开，也能用 `rs.config().enable_device_from_file()` 回放，已实测六路帧组完整读回。
+- **加速度计只提供 100、200、400 Hz，陀螺仪只提供 200、400 Hz。** 文档里常见的 `63` 在本机固件上会让整个流请求无法解析，`Couldn't resolve requests` 直接导致 pipeline 启动失败，而不是只丢那一路。当前 YAML 用的是 `accel 100` 与 `gyro 200`。
+- **红外两路上报的流名是 `Infrared 1` 与 `Infrared 2`**，不是带索引的 `Infrared`。按裸名匹配会静默丢掉两路红外，流清单与帧计数都会少两项。
+- **`wait_for_frames` 超时抛 `RuntimeError` 而不是返回空帧组。** 预览每 60 毫秒取一次，30 fps 下超时是常态，所以 `backend/app/camera.py` 会把 `didn't arrive within` 这种报错翻译回「暂无新帧」，只有真正的失败才拆掉 pipeline。
+- **`frame.get_data()` 返回的是 `BufData`，不是 ndarray。** `len()` 会抛 `TypeError`，但 `bytes()` 可用。因此编码只用 Pillow，既不需要 OpenCV，也不需要 numpy。
+- 分辨率与像素格式要从 `frame.get_profile().as_video_stream_profile()` 取，迭代帧组得到的是基类 `frame`，上面没有 `width()`。
+- 一次 pipeline 重启的实测代价是打开约 270 到 366 毫秒、关闭约 1142 毫秒，所以每次开始与停止录制之间会有约一秒的预览黑屏，与设计文档里写的预期一致。
+
+### 相机探测
 
 - 相机探测在 `backend/app/device.py`。它不直接调 SDK，而是把枚举隔到一个子进程 `backend/tools/enumerate_devices.py` 里，超时与段错误都关在子进程内，不会把服务打死。
   这不是多此一举。SDK 打开失败或者设备被别的进程占着时，收尾阶段可能直接段错误，进程以 139 退出，`try` 抓不住，卡住的 native 调用也拦不住信号。只有子进程能同时关住这两种情况。
@@ -244,8 +243,8 @@ Linux 与 macOS 不在本项目的目标平台内。官方也支持 Ubuntu，但
 
 ### 与操作系统无关的一条
 
-USB 链路速率由硬件与线材决定。本机这台 D435i 实测只有 **480 Mbps，即 USB 2.0**，换过接口仍是这个速率，服务发现不是 3.x 会在日志里警告，首页的 Link speed 也会显示出来。
-D435i 在 USB 2.0 下深度分辨率与帧率都会缩水。这条换机器不会自动变好，得换 USB 3 数据线与不共享带宽的接口。采集质量受它的影响比权限问题更直接。
+USB 链路速率由硬件与线材决定。本机这台 D435i 实测协商到 **USB 3.2**，六路流同时在 30 fps 下录制与回放都没有丢帧。服务在发现链路不是 3.x 时会在日志里警告，首页的 Link speed 也会显示出来。
+若换到 USB 2.0 的接口或线材，深度分辨率与帧率都会缩水。这条换机器不会自动变好，得换 USB 3 数据线与不共享带宽的接口。采集质量受它的影响比权限问题更直接。
 
 ---
 
@@ -257,7 +256,7 @@ D435i 在 USB 2.0 下深度分辨率与帧率都会缩水。这条换机器不�
 C:\Users\ch7au\Documents\Project_A\   <- 主页配置的项目目录
   session_a\                          <- 新建会话时命名
     session.json
-    stage_01\capture.bag
+    stage_01\capture.db3
     stage_01\meta.json
     stage_01\thumb.jpg
     stage_08\...
@@ -266,6 +265,12 @@ C:\Users\ch7au\Documents\Project_A\   <- 主页配置的项目目录
 ```
 
 项目目录里除了会话子目录没有别的东西，整个目录拷走就是一份干净的数据集。服务自己的文件，也就是示意图、日志与设置，放在另一个服务目录里，两者不要混。
+
+### 选项目目录
+
+主页上的 Browse folders 打开选择器，它浏览的是**采集主机**上的目录，不是打开浏览器的那台机器，原因见 `docs/FRONTEND.md`。左侧 Places 只列 `fs.allow_roots` 里那几块盘，也就是 `C:` 与 `D:`，右上角则列出当前目录的子目录。
+
+打开时定位到已配置的项目目录；还没配置时定位到第一块非系统盘，所以首次打开落在 `D:\` 这类数据盘上，而不是系统盘的用户目录。盘符根不能直接当项目目录，需要在盘里选一个具体目录或新建一个。
 
 ---
 
@@ -294,13 +299,20 @@ Realsense/
       fsbrowser.py       目录浏览与新建目录
       guides.py          示意图清单、启动自检、展示副本
       device.py          相机探测，未接相机时给出原因
+      camera.py          采集线程、pipeline 计划、JPEG 编码
+      sessions.py        会话目录布局、清单读写、中断恢复
+      capture.py         会话状态机，把相机与磁盘串起来
+      diagrams.py        默认示意图的绘制，几何与渲染分开以便断言
       services.py        容器与启动自检顺序
       routers/           一组接口一个模块
-    tests/test_api.py    十二个接口的测试，不需要相机
+    tests/
+      test_api.py        基础、项目目录、目录浏览、示意图接口的测试
+      test_sessions.py   会话、录制、预览的测试，用替身流水线，不需要相机
+      test_diagrams.py   默认示意图的几何与渲染测试，不需要相机
     var/                 运行时数据，不进版本库
   frontend/
     src/
-      api/               数据模型与两个后端实现
+      api/               数据模型与 HTTP 客户端
       components/        通用组件
       composables/       状态层
       router/            路由与守卫
@@ -332,21 +344,13 @@ Realsense/
 
 当前目录不对。`package.json` 在 `frontend/` 下，先切进去，或者从仓库根目录用 `npm --prefix frontend run dev`。
 
+**`npm run dev` 打开后页面报错或一直转圈**
+
+前端不再有模拟后端，页面数据都来自 `http://127.0.0.1:8000`。后端没跑起来就会出现这种情况，先把 `python backend\run.py` 起上。
+
 **端口被占用**
 
 换端口启动，`npx vite --port 5174`。注意这只改了前端端口，`/api` 仍然代理到 8000。
-
-**界面右上角一直显示 Mock**
-
-说明跑在模拟后端上，`VITE_USE_MOCK` 还是 `true`。按上面那节切到 `false` 并重启开发服务器。
-
-**页面数据看起来是假的**
-
-模拟后端就是这么设计的，示意图是程序生成的 SVG，相机画面是 canvas 画的。接上真实后端后这些都会换成真数据。
-
-**改了 `.env.development` 没生效**
-
-环境文件只在开发服务器启动时读一次，改完要重启 `npm run dev`。
 
 **类型检查报 `./lib/tsc` 相关错误**
 
@@ -375,7 +379,7 @@ TypeScript 被升到了 7。降回 5，`npm install -D typescript@5`。
 
 **在主页选了 `D:\` 这类盘符根目录被拒**
 
-盘符根目录不允许当作项目目录，往下一级选一个具体目录，例如 `D:\Project_A`。
+盘符根目录不允许当作项目目录，往下一级选一个具体目录，例如 `D:\Project_A`。选择器打开时就停在盘符上，此时底部的 Select this folder 是禁用的，旁边写着原因，用 New folder 建一层或点进已有目录即可。
 
 **示意图上传被拒，说文件是别的格式**
 
@@ -384,3 +388,11 @@ TypeScript 被升到了 7。降回 5，`npm install -D typescript@5`。
 **阶段描述保存不了**
 
 先看输入框右下角的字数，超过 500 会转红并禁用保存，这时后端也会拒绝并报 `GUIDE_TEXT_TOO_LONG`。想恢复配置文件里的默认文案，点 Reset 清空即可。
+
+**示意图页面上全是 `DEFAULT` 角标的图**
+
+这就是默认示意图，说明服务在最开始面对的是一个空目录。它们只是占位，标明每个阶段的姿态与三个数值，用 Replace 换成真图即可。不想要这套默认值就把 `guides.seed_defaults` 设成 false。
+
+**删掉一张默认示意图，重启服务后它又回来了**
+
+不该发生，如果真遇到说明目录被判成了空目录，检查 `backend/var/guides/` 下是否连 `manifest.json` 都不在了。恢复整套默认图的正确做法是删掉整个目录再重启。

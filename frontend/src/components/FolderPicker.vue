@@ -34,26 +34,29 @@ const crumbs = computed(() => (listing.value ? breadcrumb(listing.value.path) : 
 
 const canSelect = computed(() => {
   const l = listing.value
-  return l !== null && l.readable && l.writable && l.enough
+  return l !== null && l.readable && l.error === null
 })
 
 /*
  * Why the current folder cannot be chosen, shown next to the Select button so
  * the reason is not buried in a tooltip.
+ *
+ * The service states this verbatim and its docstring asks the picker not to keep
+ * a second copy of the rules. It did keep one, and left out the check that the
+ * folder is not itself a volume root, so the button stayed enabled on a drive the
+ * backend then refused with PROJECT_PATH_INVALID. Trusting `error` keeps the two
+ * from drifting again.
  */
 const blockReason = computed(() => {
   const l = listing.value
   if (!l) {
     return null
   }
+  if (l.error) {
+    return l.error
+  }
   if (!l.readable) {
     return 'This folder cannot be read.'
-  }
-  if (!l.writable) {
-    return 'The capture service cannot write here.'
-  }
-  if (!l.enough) {
-    return `Only ${l.free_gb.toFixed(1)} GB free, at least 5 GB is needed.`
   }
   return null
 })
@@ -258,7 +261,8 @@ watch(showHidden, () => void navigate(current.value))
 
             <div v-else-if="listing.entries.length === 0" class="list__state">
               <p>No subfolders here.</p>
-              <p class="list__hint">You can select this folder, or create one inside it.</p>
+              <p v-if="canSelect" class="list__hint">You can select this folder, or create one inside it.</p>
+              <p v-else class="list__hint">Create a folder inside it to use as the project folder.</p>
             </div>
 
             <ul v-else class="list__items">

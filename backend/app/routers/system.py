@@ -16,6 +16,7 @@ from ..models import (
     StageConfig,
 )
 from ..services import Services
+from ..sessions import BAG_NAME
 
 log = logging.getLogger(__name__)
 
@@ -59,9 +60,10 @@ def health(services: Services = Depends(get_services)) -> Health:
             total=readiness["total"],
             missing_indices=readiness["missing_indices"],
         ),
-        # Session recovery is not implemented yet. The field exists so the shape
-        # is final and the frontend needs no change once sessions land.
-        active_session=None,
+        # Session recovery, per docs/API.md section 4.1. The frontend uses this to
+        # reattach to a round that is already running instead of offering to start
+        # a second one.
+        active_session=services.capture.active_summary(),
     )
 
 
@@ -90,6 +92,8 @@ def app_config(services: Services = Depends(get_services)) -> AppConfig:
         recording=RecordingConfig(
             min_duration_s=config.min_duration_s,
             max_duration_s_default=config.max_duration_default_s,
+            output_name=BAG_NAME,
+            bytes_per_second=config.recording_bytes_per_s,
         ),
         stages=stages,
     )

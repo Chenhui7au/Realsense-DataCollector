@@ -1,11 +1,21 @@
-# 后端接口设计文档
+﻿# RealSense Data-Collector 后端接口设计文档
 
-版本 v0.9
+版本 v0.14
 日期 2026-10-05
+
+v0.14 变更点。项目名统一为 RealSense Data-Collector，文档标题与 `app_title` 示例不再使用旧名。接口路径、字段与错误码未变。
+
+v0.13 变更点。`GET /api/health` 的 `active_session` 从恒为 `null` 改为真正给出进行中会话的摘要，这是刷新、新标签页与换浏览器能接回会话的依据。`GET /api/config` 的 `recording` 段新增 `output_name` 与 `bytes_per_second`：前者让描述产物的界面不必硬编码扩展名，后者让录制中的体积估算随流配置自适应。接口路径与错误码未变。
+
+v0.12 变更点。目录列表的 `shortcuts` 由个人目录加挂载点改为只列允许范围内的盘符，当前不存在的盘不下发。`GET /api/fs/list` 省略 `path` 时的起点由服务用户主目录改为首选数据盘，新增 4.5.1 说明这条规则。接口路径、其余字段与错误码未变。
+
+v0.11 变更点。新增 `guides.seed_defaults`，服务在示意图目录为空时自动画出整套默认示意图，使新建一轮的前置条件在一台刚装好的机器上即告满足。新增 8.1.1 说明判定规则与实现方式，启动自检流程增加一步。接口、字段与错误码未变。
+
+v0.10 变更点。录制文件扩展名由 `capture.bag` 改为 `capture.db3`。真机实测 `enable_record_to_file` 拒绝其他扩展名，文档原先的 `.bag` 会让录制直接失败。`GET /api/preview/snapshot` 明确为按需开启预览，因为它是 MJPEG 不可用时的降级方案，不应要求调用方先自行开流。修正 `6.11` 与 `6.12` 中 `STAGE_NOT_SAVED` 的状态码，与错误码表及状态机表保持一致，均为 409。
 
 v0.9 变更点。示例路径统一为 Windows 形态，允许浏览与写入的根部默认值改为盘符。接口、字段与错误码未变。
 
-本文档描述 D435i 数据采集系统的后端接口契约、数据模型与持久化行为。系统级需求与架构见 `docs/DESIGN.md`，前端页面逻辑见 `docs/FRONTEND.md`。
+本文档描述 RealSense Data-Collector 的后端接口契约、数据模型与持久化行为。系统级需求与架构见 `docs/DESIGN.md`，前端页面逻辑见 `docs/FRONTEND.md`。
 
 v0.8 变更点。项目信息对象移除 `session_count`。它原先给主页用，让采集员在开始新一轮前看出选定的目录里已有几轮会话，但这个信息在选择器里已经给过一遍，主页重复展示价值有限，且计数口径难以自洽。移除后 `3.5` 的字段表少一项，`4.1` 的示例同步。
 
@@ -89,7 +99,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | 健康检查，含设备、项目目录与示意图就绪状态 |
+| GET | `/api/health` | 健康检查，含设备、项目目录、示意图就绪状态与进行中的会话 |
 | GET | `/api/config` | 读取阶段配置 |
 
 ### 2.2 项目目录
@@ -238,7 +248,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 
 ```json
 {
-  "bag_path": "stage_01\\capture.bag",
+  "bag_path": "stage_01\\capture.db3",
   "size_bytes": 184320512,
   "duration_s": 12.4,
   "started_at": "2026-09-20T14:31:02+08:00",
@@ -339,8 +349,8 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
   "name": "Documents",
   "home": "C:\\Users\\ch7au",
   "shortcuts": [
-    { "name": "Home", "path": "C:\\Users\\ch7au" },
-    { "name": "Documents", "path": "C:\\Users\\ch7au\\Documents" }
+    { "name": "C:", "path": "C:\\" },
+    { "name": "D:", "path": "D:\\" }
   ],
   "readable": true,
   "writable": true,
@@ -359,7 +369,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 | `path` | string | 当前目录的绝对路径，已规范化 |
 | `parent` | string\\|null | 上级目录，已在文件系统根时为 `null` |
 | `name` | string | 当前目录名，根目录时为 `/` |
-| `home` | string | 服务运行用户的主目录，供选择器定位 |
+| `home` | string | 服务运行用户的主目录 |
 | `shortcuts` | array | 常用位置快捷入口，由服务决定，不硬编码在前端 |
 | `readable` | bool | 服务是否有读取权限 |
 | `writable` | bool | 服务是否有写入权限 |
@@ -367,6 +377,12 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 | `enough` | bool | 剩余空间是否达到项目目录的阈值 |
 | `error` | string\\|null | 不可用作项目目录时的原因，可用时为 `null` |
 | `entries` | array | 子目录列表，按名称自然序排序 |
+
+`shortcuts` 只包含允许范围内的盘符，也就是 `fs.allow_roots` 里那些本身是卷根的项，名字就是盘符，如 `C:`。个人目录不再作为入口下发，因为这套选择器要选的是录制数据的落盘位置，一个桌面目录属于噪音。允许范围内但不是卷根的项，例如用户主目录，同样不下发，它就坐落于某块盘内，与盘符并列会让人以为它在盘外。
+
+配置里列了但当前不存在的盘不下发。`fs.allow_roots` 是一份长期授权，可能包含临时拔掉的移动硬盘，而一个点了必然报 `DIR_NOT_FOUND` 的入口比没有这个入口更糟。
+
+`error` 与 `shortcuts` 是两条独立的信息。前者只描述当前目录能否用作项目目录，后者只描述有哪些跳转入口，因此选择器跳到一个有 `error` 的目录是正常的。
 
 `entries` 里每个条目的字段如下。
 
@@ -478,6 +494,8 @@ stateDiagram-v2
 
 `active_session` 从标识改为摘要对象是刻意的。主页需要展示已保存阶段数与目录路径，只给一个标识的话前端还得再发一次请求。
 
+它是刷新、新标签页与换浏览器能接回进行中会话的唯一依据。前端在会话状态为空时读这个字段决定进哪一页：主页据此显示继续或丢弃，而任何一页刷新后都能回到当前阶段。已结束的会话不出现在这里，那只属于历史记录，列在 `GET /api/sessions`。
+
 ### 4.2 读取配置
 
 `GET /api/config`
@@ -486,10 +504,15 @@ stateDiagram-v2
 
 ```json
 {
-  "app_title": "D435i 数据采集",
+  "app_title": "RealSense Data-Collector",
   "total_stages": 8,
   "preview": { "fps": 15, "jpeg_quality": 80 },
-  "recording": { "min_duration_s": 1, "max_duration_s_default": 300 },
+  "recording": {
+    "min_duration_s": 1,
+    "max_duration_s_default": 300,
+    "output_name": "capture.db3",
+    "bytes_per_second": 76496400
+  },
   "stages": [
     {
       "index": 1,
@@ -505,7 +528,13 @@ stateDiagram-v2
 | --- | --- |
 | `recording.min_duration_s` | 低于该时长的录制会被丢弃，全局设置 |
 | `recording.max_duration_s_default` | 单个阶段未单独配置时长时的上限 |
+| `recording.output_name` | 单条录制的文件名，例如 `capture.db3` |
+| `recording.bytes_per_second` | 按配置的流推算出的录制速率，供录制中的体积估算使用 |
 | `stages[].max_duration_s` | 该阶段的上限，覆盖全局默认值 |
+
+`output_name` 必须由服务给出，因为 SDK 只接受 `.db3` 扩展名，其余一律拒绝。写它的是配置里的 `camera.recording.streams` 之外的这条约束，前端无从推断，所以不能在界面上硬编码一个名字。
+
+`bytes_per_second` 由服务按 `camera.recording.streams` 推算，图像流按宽度乘高度乘每像素字节数乘帧率累加，IMU 每条样本按三个 32 位浮点即 12 字节累加。实测参考：出厂六路配置推算 73 MB/s，真机 D435I 写盘为 59 到 71 MB/s，取决于录制时长。它只用于界面上“本次已写入约多少”的量级提示，不参与任何判空或校验逻辑。改变 `streams` 之后它自动跟着变。
 
 这个接口的定位要说清楚。它服务于**还没有会话时**的界面，也就是主页与示意图配置页，那些地方需要提前知道共几个阶段、叫什么名字。
 
@@ -565,14 +594,14 @@ stateDiagram-v2
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
-| `path` | 否 | 要列出的目录。省略时从服务运行用户的主目录开始 |
+| `path` | 否 | 要列出的目录。省略时返回 4.5.1 描述的起点 |
 | `show_hidden` | 否 | 是否包含以点开头的目录，默认为 `false` |
 
 响应 200 返回目录列表对象，结构见 3.6。
 
 路径不存在时返回 404 与 `DIR_NOT_FOUND`。存在但服务无权读取时返回 403 与 `DIR_NOT_READABLE`。越出允许范围时返回 403 与 `PATH_NOT_ALLOWED`。
 
-**允许范围**。服务按配置里的 `fs.allow_roots` 决定可浏览与写入的根部，默认为服务用户主目录与配置里列出的盘符，例如 `C:\` 与 `D:\`。这个限制的目的是避免采集员误把项目目录指到系统目录上，而不是当成一道安全边界，因为这套服务本身不做鉴权。
+**允许范围**。服务按配置里的 `fs.allow_roots` 决定可浏览与写入的根部，默认为配置里列出的盘符，例如 `C:\` 与 `D:\`。这个限制的目的是避免采集员误把项目目录指到系统目录上，而不是当成一道安全边界，因为这套服务本身不做鉴权。
 
 越界有两种表现，前端不需要额外处理。请求一个范围内的目录时，响应的 `parent` 在到达范围根部时返回 `null`，这与文件系统根的表现完全一致，选择器的 Up 按钮因此自然变灰。请求一个范围外的目录时，直接返回 403 与 `PATH_NOT_ALLOWED`。
 
@@ -581,6 +610,19 @@ stateDiagram-v2
 需要注意的是这个接口只读不写，也不会创建目录。列出一个不存在的目录不会顺带把它建出来，创建只发生在 `PUT /api/project` 与 `POST /api/fs/mkdir` 两处。
 
 `path` 会被规范化，因此 `C:\Users\a\.\b` 与 `C:\Users\a\b` 返回同一份结果，`..` 也会被解析掉。规范化的结果在响应的 `path` 字段里给出，前端应当用它而不是用自己请求时传的字符串。
+
+### 4.5.1 省略 `path` 时的起点
+
+选择器在采集员还没有偏好时打开的目录，规则如下。
+
+1. 已配置的项目目录，有则用它
+2. 否则取允许范围内第一块**非系统盘**的盘符。录制数据落在数据盘上，因此不把采集员丢进系统盘的用户目录
+3. 只允许系统盘时退回系统盘
+4. 允许范围里一个盘符都没有时退回服务运行用户的主目录
+
+全为盘符的配置下第二条永远命中，因此一台刚装好的机器打开选择器时落在 `D:\` 这类数据盘上。第四条是给允许范围只由目录构成的情形准备的，那种配置里没有盘符可挑。
+
+起点由服务决定，与 `shortcuts` 同源。前端不硬编码盘符，因为哪块盘可用取决于主机。
 
 ### 4.6 新建目录
 
@@ -1018,7 +1060,7 @@ Content-Type: image/jpeg
   "stage_index": 1,
   "state": "recording",
   "started_at": "2026-09-20T14:31:02+08:00",
-  "bag_abs_path": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a\\stage_01\\capture.bag",
+  "bag_abs_path": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a\\stage_01\\capture.db3",
   "auto_stop_at_s": 60
 }
 ```
@@ -1054,7 +1096,7 @@ Content-Type: image/jpeg
   "stage_index": 1,
   "state": "saved",
   "artifact": {
-    "bag_path": "stage_01\\capture.bag",
+    "bag_path": "stage_01\\capture.db3",
     "size_bytes": 184320512,
     "duration_s": 12.4,
     "started_at": "2026-09-20T14:31:02+08:00",
@@ -1084,7 +1126,7 @@ Content-Type: image/jpeg
 响应 200
 
 ```json
-{ "stage_index": 1, "state": "idle", "deleted": ["capture.bag", "meta.json", "thumb.jpg"] }
+{ "stage_index": 1, "state": "idle", "deleted": ["capture.db3", "meta.json", "thumb.jpg"] }
 ```
 
 删除是不可逆操作，前端必须二次确认。
@@ -1118,7 +1160,7 @@ Content-Type: image/jpeg
 
 `GET /api/sessions/{sid}/stages/{index}/artifact`
 
-响应 200 返回 3.3 中的录制结果对象。未保存时返回 404 与 `STAGE_NOT_SAVED`。
+响应 200 返回 3.3 中的录制结果对象。未保存时返回 409 与 `STAGE_NOT_SAVED`。
 
 ### 6.12 录制缩略图
 
@@ -1126,7 +1168,7 @@ Content-Type: image/jpeg
 
 响应 200 返回 `image/jpeg`。用于采集员在推进前确认画面内容是否正常。
 
-未保存或缩略图尚未生成时返回 404 与 `STAGE_NOT_SAVED`。
+未保存或缩略图尚未生成时返回 409 与 `STAGE_NOT_SAVED`。
 
 ---
 
@@ -1153,6 +1195,8 @@ Content-Type: image/jpeg
 `GET /api/preview/snapshot`
 
 响应 200 返回单张 `image/jpeg`。作为 MJPEG 不可用时的降级方案，也便于脚本化测试。
+
+若预览尚未开启，本接口按需开启它再取帧，因为它是降级路径，调用方没有理由先自行开流。已有帧在流动时直接返回当前帧，不打断正在进行的预览。预览已开启但相机一直没有给出帧时，等待超时后返回 500 与 `CAMERA_ERROR`。
 
 ---
 
@@ -1195,6 +1239,18 @@ Content-Type: image/jpeg
 
 `version` 字段用于迁移。升级后若发现版本低于当前支持的版本，则在启动时做一次迁移并写回新版本。只要数据目录不被删除，代码更新不会导致重新配置。
 
+### 8.1.1 默认示意图
+
+新建一轮要求八个阶段的示意图全部到位，这对生产线是对的，但让一台刚装好的机器无从下手，除非先手工备好八张图。所以配置项 `guides.seed_defaults` 默认开启，服务在示意图目录完全为空时为每个阶段画一张示意图写入。
+
+种子图的判定是"完全为空"，判据有三个，目录里没有任何条目，且 `manifest.json` 与其备份都不存在。三条同时成立才种入，因此出现过任何一次配置之后服务都不再自动补。这条规则是为了让采集员删掉一张占位图去换真图之后，它不会在下次重启又冒回来。要整套恢复默认图，删掉示意图目录再重启。
+
+种子图走的是上传接口的同一段代码，因此清单元数据、体积与尺寸校验、内容指纹、展示副本规则全部一致，系统里没有"默认图"这条特殊路径。它按 `display_max_width` 绘制，所以不生成展示副本。原始文件名固定为 `default_stage_NN.png`，采集员在清单里一眼能认出这是占位。
+
+绘制用的是 Pillow，不引入额外依赖，也不在仓库里放二进制素材。每张图为俯视视角，标出相机方位与距离，右上角侧视图标出俯仰，底部写出方位角、俯仰角与距离，并带 `DEFAULT` 角标。绘制几何与渲染分开实现，便于直接断言坐标而不用从像素里反推。
+
+关闭这项就把开关设成 false，目录保持为空，启动自检的第 5 步会让八个阶段都落在未配置，与没有这个功能时完全一样。
+
 ### 8.2 启动自检流程
 
 服务启动时的处理顺序如下。
@@ -1202,13 +1258,14 @@ Content-Type: image/jpeg
 1. 若服务目录与示意图目录不存在则创建
 2. 读取设置文件，取得采集员上次配置的项目目录。不存在则用 YAML 的初始值，都没设则为未配置
 3. 校验项目目录，不存在则创建，并探测可写性与剩余空间
-4. 读取示意图清单。不存在则视为全部未配置，并按配置决定是否尝试从目录下的文件重建
-5. 校验清单条目指向的文件是否真实存在，缺失的移除并记告警。描述条目独立处理，指向不存在或超出阶段范围的一律丢弃，不影响图片
-6. 校验清单的 `version` 字段，低于当前版本则执行迁移并写回
-7. 把有效的阶段配置与描述载入内存，供接口直接读取
-8. 扫描项目目录，恢复未完成会话的状态，保证重启后能继续
+4. 若示意图目录完全为空且 `guides.seed_defaults` 为真，画出整套默认示意图，见 8.1.1
+5. 读取示意图清单。不存在则视为全部未配置，并按配置决定是否尝试从目录下的文件重建
+6. 校验清单条目指向的文件是否真实存在，缺失的移除并记告警。描述条目独立处理，指向不存在或超出阶段范围的一律丢弃，不影响图片
+7. 校验清单的 `version` 字段，低于当前版本则执行迁移并写回
+8. 把有效的阶段配置与描述载入内存，供接口直接读取
+9. 扫描项目目录，恢复未完成会话的状态，保证重启后能继续
 
-清单与实际文件可能因为人为误删而不一致，第五种情况是给手工拷贝素材留的后路，对应下面这张表。
+清单与实际文件可能因为人为误删而不一致，第六种情况是给手工拷贝素材留的后路，对应下面这张表。
 
 | 情况 | 处理 |
 | --- | --- |
@@ -1270,11 +1327,11 @@ Content-Type: image/jpeg
     session.json
     session.log
     stage_01/
-      capture.bag
+      capture.db3
       meta.json
       thumb.jpg
     stage_08/
-      capture.bag
+      capture.db3
       meta.json
       thumb.jpg
   session_b/
@@ -1318,7 +1375,7 @@ Content-Type: image/jpeg
   "started_at": "2026-09-20T14:31:02+08:00",
   "stopped_at": "2026-09-20T14:31:14+08:00",
   "duration_s": 12.4,
-  "bag_file": "capture.bag",
+  "bag_file": "capture.db3",
   "size_bytes": 184320512,
   "sha256": "9f2c...",
   "streams": ["depth", "color", "infrared_1", "infrared_2", "accel", "gyro"],

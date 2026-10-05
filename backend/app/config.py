@@ -28,6 +28,21 @@ class ConfigError(Exception):
 DEFAULT_STAGE_MAX_DURATION_S = 300.0
 DEFAULT_MIN_DURATION_S = 1.0
 
+# Bytes one pixel occupies, per stream format. Anything not listed is treated as
+# two byte, which is the safe middle: too high overstates disk use, too low
+# understates it, and understating is the one that gets someone into trouble.
+FORMAT_BYTES_PER_PIXEL = {
+    "z16": 2,
+    "y8": 1,
+    "y16": 2,
+    "bgr8": 3,
+    "rgb8": 3,
+    "bgra8": 4,
+    "rgba8": 4,
+}
+# motion_xyz32f is three 32 bit floats.
+MOTION_SAMPLE_BYTES = 12
+
 
 class Config:
     """Parsed configuration with the defaults filled in."""
@@ -38,7 +53,7 @@ class Config:
         base = source.parent
 
         app = raw.get("app") or {}
-        self.app_title: str = str(app.get("title") or "D435i Capture")
+        self.app_title: str = str(app.get("title") or "RealSense Data-Collector")
         self.host: str = str(app.get("host") or "127.0.0.1")
         self.port: int = int(app.get("port") or 8000)
         self.cors_origins: List[str] = list(app.get("cors_origins") or [])
@@ -75,6 +90,11 @@ class Config:
         self.guide_instructions_max_length: int = int(guides.get("instructions_max_length", 500))
         self.guide_display_max_width: int = int(guides.get("display_max_width", 1600))
         self.guide_recommended_aspect: str = str(guides.get("recommended_aspect") or "4:3")
+        # Draw the placeholder diagram set when the guide directory is still
+        # empty, so a fresh service can be driven end to end without eight
+        # prepared images. Defaults to on because the alternative is a service
+        # that refuses to start a session for a reason only the config explains.
+        self.guides_seed_defaults: bool = bool(guides.get("seed_defaults", True))
         self.guides_persist: bool = bool(guides.get("persist", True))
         self.guides_rebuild_from_dir: bool = bool(guides.get("rebuild_from_dir", True))
         self.guides_keep_backup: bool = bool(guides.get("keep_backup", True))
@@ -86,6 +106,8 @@ class Config:
         self.camera_probe: bool = bool(camera.get("probe", True))
         self.camera_reset_on_session_end: bool = bool(camera.get("reset_on_session_end", False))
         preview = camera.get("preview") or {}
+        self.preview_width: int = int(preview.get("width", 640))
+        self.preview_height: int = int(preview.get("height", 480))
         self.preview_fps: int = int(preview.get("fps", 15))
         self.preview_jpeg_quality: int = int(preview.get("jpeg_quality", 80))
         recording = camera.get("recording") or {}
@@ -95,6 +117,7 @@ class Config:
         )
         self.colorize_depth: bool = bool(recording.get("colorize_depth", False))
         self.recording_streams: Dict[str, Any] = dict(recording.get("streams") or {})
+        self.recording_bytes_per_s: int = self._estimate_record_rate()
 
         storage = raw.get("storage") or {}
         self.compress_bag: bool = bool(storage.get("compress_bag", False))
@@ -107,6 +130,34 @@ class Config:
         self._validate_stages()
 
     # ------------------------------------------------------------- helpers
+
+    def _estimate_record_rate(self) -> int:
+        """Bytes per second the configured recording streams produce.
+
+        Uncompressed frames, so it is exact for the image streams and a very close
+        lower bound for the IMU, which the SDK writes one sample at a time. Used by
+        the capture screen to show how much disk a running take is using; the value
+        previously lived in the frontend as a hand measured constant and was four
+        times too low, so a gauge meant to warn about disk use understated it.
+
+        Measured against a real D435I with the shipped six stream config: this
+        predicts 76.4 MB/s, the device writes 59 to 71 MB/s depending on take
+        length. Close enough for a gauge, and it tracks config changes for free.
+        """
+        total = 0.0
+        for spec in self.recording_streams.values():
+            if not isinstance(spec, dict):
+                continue
+            fps = float(spec.get("fps") or 30)
+            # A motion sample is three floats, x, y and z.
+            if "width" not in spec and "height" not in spec:
+                total += MOTION_SAMPLE_BYTES * fps
+                continue
+            width = float(spec.get("width") or 0)
+            height = float(spec.get("height") or 0)
+            pixel = FORMAT_BYTES_PER_PIXEL.get(str(spec.get("format") or "").lower(), 2)
+            total += width * height * pixel * fps
+        return int(round(total))
 
     @staticmethod
     def _resolve(value: str, base: Path) -> Path:

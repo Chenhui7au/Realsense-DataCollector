@@ -39,6 +39,9 @@ const maxDuration = computed(
 const guide = computed(() => byIndex.value.get(props.index) ?? null)
 const imageUrl = computed(() => guideImageUrl(guide.value))
 
+/** From the service, which owns the .db3 rule. Shown before any take exists. */
+const outputName = computed(() => config.value?.recording.output_name ?? '')
+
 const isRecording = computed(() => stage.value?.state === 'recording')
 const isSaved = computed(() => stage.value?.state === 'saved')
 const isCurrent = computed(() => session.value?.current_stage === props.index)
@@ -50,9 +53,11 @@ const position = computed(
 )
 
 /*
- * Four ways out of this screen. A saved stage must not dead-end, so when it is
- * still the current stage the button advances or finishes the session instead
- * of bouncing off the capture route guard.
+ * Ways out of this screen. A saved stage must not dead-end, so when it is still
+ * the current stage the primary button moves the session forward and a secondary
+ * button offers the capture screen, which is where Re-record lives. Without that
+ * second button a collector who navigated away from a take they want to redo has
+ * no way back to it: advancing is the only other option and cannot be undone.
  */
 type PrimaryKind = 'capture' | 'advance' | 'finish' | 'current'
 
@@ -72,11 +77,18 @@ const primary = computed<{ kind: PrimaryKind; label: string }>(() => {
   return { kind: 'advance', label: 'Next stage' }
 })
 
+/** Offered only where the primary button no longer opens the capture screen. */
+const canReRecord = computed(() => isSaved.value && isCurrent.value)
+
+function openCapture() {
+  void router.push({ name: 'capture', params: { index: String(props.index) } })
+}
+
 async function onPrimary() {
   const kind = primary.value.kind
 
   if (kind === 'capture') {
-    await router.push({ name: 'capture', params: { index: String(props.index) } })
+    openCapture()
     return
   }
 
@@ -157,14 +169,14 @@ async function goHome() {
           <dt>Maximum take length</dt>
           <dd>{{ maxDuration ?? '--' }} s</dd>
           <dt>Output</dt>
-          <dd>capture.bag</dd>
+          <dd>{{ outputName || 'capture.db3' }}</dd>
         </dl>
       </div>
     </div>
 
     <p v-if="isSaved" class="wash wash--ok">
-      This stage has already been saved. Use <strong>Re-record</strong> on the capture screen to
-      take it again.
+      This stage has already been saved. Re-record it to take it again, or move on to the next
+      stage.
     </p>
 
     <footer class="foot">
@@ -180,6 +192,9 @@ async function goHome() {
 
       <div class="foot__side foot__side--end">
         <AppButton variant="ghost" @click="goHome">Back to home</AppButton>
+        <AppButton v-if="canReRecord" variant="secondary" size="lg" @click="openCapture">
+          Re-record this stage
+        </AppButton>
         <AppButton variant="primary" size="lg" :loading="advancing" @click="onPrimary">
           {{ primary.label }}
         </AppButton>

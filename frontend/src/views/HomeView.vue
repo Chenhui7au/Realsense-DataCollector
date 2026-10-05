@@ -99,7 +99,7 @@ const newSessionOpen = ref(false)
 const existingNames = ref<string[]>([])
 const sessionError = ref<string | null>(null)
 
-const title = computed(() => config.value?.app_title ?? 'D435i Capture')
+const title = computed(() => config.value?.app_title ?? 'RealSense Data-Collector')
 const device = computed(() => health.value?.device ?? null)
 
 /** The one line the collector needs to read before pressing anything. */

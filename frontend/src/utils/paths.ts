@@ -1,7 +1,7 @@
 /*
- * Path and name rules, shared by the screens and the mock backend so the two
- * can never disagree about what is acceptable. The real backend repeats every
- * check, because a client side check is a convenience and not a control.
+ * Path and name rules for the screens. The backend repeats every check, because a
+ * client side check is a convenience and not a control; `app/paths.py` is the
+ * authority and the shapes here mirror it.
  */
 
 export const SESSION_NAME_MAX = 64
@@ -50,25 +50,6 @@ export function trimTrailingSeparator(value: string): string {
     return trimmed
   }
   return value.startsWith('/') ? '/' : ''
-}
-
-/**
- * True when `path` is `root` itself or sits underneath it. Tolerates either
- * separator, so a root like `D:\` still matches `D:\capture`.
- */
-export function isUnder(path: string, root: string): boolean {
-  if (path === root) {
-    return true
-  }
-  const base = root.replace(/[\\/]+$/, '')
-  const separator = separatorFor(path)
-  return base === '' ? path.startsWith(separator) : path.startsWith(`${base}${separator}`)
-}
-
-/** Last segment of a path, or the path itself when it has no parent. */
-export function lastSegment(value: string): string {
-  const parts = splitSegments(value)
-  return parts.length > 0 ? parts[parts.length - 1] : value
 }
 
 /** True when any segment is literally `..`. */

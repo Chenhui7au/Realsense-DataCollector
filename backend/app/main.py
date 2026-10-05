@@ -1,8 +1,9 @@
 """Application factory and startup sequence.
 
 Stage names and instructions are added to the log, host layout is verified, then
-the routers are mounted. The generic routes that need a camera live in
-``app.routers.pending`` and answer 501 until their real implementations land.
+the routers are mounted. The session, recording and preview routes need the
+camera and live in ``app.routers.sessions`` and ``app.routers.preview``, both
+backed by :class:`app.capture.CaptureService`.
 """
 
 from __future__ import annotations
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("ready, %d stages configured", services.config.total_stages)
     yield
     log.info("stopping capture service")
+    services.shutdown()
 
 
 def create_app(config_path: Optional[str | os.PathLike] = None) -> FastAPI:
@@ -94,8 +96,8 @@ def create_app(config_path: Optional[str | os.PathLike] = None) -> FastAPI:
     app = FastAPI(
         title=f"{config.app_title} backend",
         description=(
-            "D435i capture service. The contract is docs/API.md and the error "
-            "envelope is uniform across every endpoint."
+            "RealSense Data-Collector capture service. The contract is docs/API.md "
+            "and the error envelope is uniform across every endpoint."
         ),
         version=__version__,
         lifespan=lifespan,
@@ -122,9 +124,11 @@ def create_app(config_path: Optional[str | os.PathLike] = None) -> FastAPI:
 
 
 def _mount_routers(app: FastAPI) -> None:
-    from .routers import fs, guides, pending, project, system
+    from .routers import fs, guides, preview, project, sessions, system
 
-    for module in (system, project, fs, guides, pending):
+    # Order matters only in that a literal path must precede a parameterised
+    # sibling of the same shape; each module handles its own case.
+    for module in (system, project, fs, guides, sessions, preview):
         app.include_router(module.router, prefix="/api")
 
 

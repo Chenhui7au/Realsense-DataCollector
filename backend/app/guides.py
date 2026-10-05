@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, UnidentifiedImageError
 
-from . import paths
+from . import diagrams, paths
 from .config import Config
 from .errors import ApiError
 
@@ -103,6 +103,8 @@ class GuideStore:
         """Read the manifest and reconcile it with what is actually on disk."""
         with self.lock:
             self.root.mkdir(parents=True, exist_ok=True)
+            if self.config.guides_seed_defaults and self._directory_is_pristine():
+                self._seed_defaults()
             raw, from_disk = self._read_manifest()
             entries = self._parse_entries(raw)
             instructions = self._parse_instructions(raw)
@@ -135,6 +137,52 @@ class GuideStore:
             self._instructions = instructions
             if dirty:
                 self._write_manifest()
+
+    def _directory_is_pristine(self) -> bool:
+        """True when the guide directory has never held anything.
+
+        Deliberately the strongest possible reading of "nothing configured yet".
+        A directory that has a manifest, even an empty one, is not seeded over,
+        and neither is one holding an image with no manifest. Seeding therefore
+        happens once in the life of a deployment: deleting a single placeholder
+        to replace it with the real diagram keeps it deleted, and the whole set
+        comes back only once the directory itself is removed.
+        """
+        try:
+            if self.manifest_path.exists() or self.backup_path.exists():
+                return False
+            return next(self.root.iterdir(), None) is None
+        except OSError as exc:
+            log.warning("could not inspect %s, skipping the default diagrams: %s", self.root, exc)
+            return False
+
+    def _seed_defaults(self) -> int:
+        """Draw the placeholder set. Returns how many were stored.
+
+        Goes through :meth:`upload` one stage at a time, so a seeded diagram is
+        built by exactly the same code as an operator upload: validated, sized,
+        hashed and given a display copy on the same terms. A stage that fails is
+        logged and skipped rather than aborting startup, because the guide screen
+        can still be used to upload the missing one by hand.
+        """
+        seeded = 0
+        for index in self.config.stage_indices():
+            stage = self.config.stage_config(index) or {}
+            data = diagrams.placeholder_png(index, str(stage.get("name") or f"Stage {index}"))
+            try:
+                self.upload(index, f"default_stage_{index:02d}.png", "image/png", data)
+                seeded += 1
+            except ApiError as exc:
+                log.warning("could not draw the default diagram for stage %d: %s", index, exc.message)
+            except Exception:  # pragma: no cover - drawing must not stop startup
+                log.exception("unexpected failure drawing the default diagram for stage %d", index)
+        if seeded:
+            log.info(
+                "seeded %d default stage diagrams into %s, replace them from the diagrams screen",
+                seeded,
+                self.root,
+            )
+        return seeded
 
     def _read_manifest(self) -> Tuple[Dict[str, Any], bool]:
         if not self.manifest_path.is_file():

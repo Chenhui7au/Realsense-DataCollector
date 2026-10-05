@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
-import { api, isMock } from '@/api'
+import { ref, watch } from 'vue'
 import BlockingOverlay from './BlockingOverlay.vue'
 
 const props = withDefaults(
@@ -18,30 +17,13 @@ const props = withDefaults(
   },
 )
 
-const canvas = ref<HTMLCanvasElement | null>(null)
 const streamFailed = ref(false)
-let detach: (() => void) | null = null
-
-function stopMock() {
-  detach?.()
-  detach = null
-}
 
 /*
- * Mock builds paint into a canvas. The real build renders the MJPEG stream into
- * an img element and never touches the canvas path.
+ * A fresh stream clears the previous failure. Without this the fallback would
+ * stick after the camera recovered, because the element is unmounted on error and
+ * the browser never gets a second chance at the same src.
  */
-watch(
-  () => [props.status, canvas.value] as const,
-  ([status, el]) => {
-    stopMock()
-    if (status === 'live' && isMock && el && api.attachMockPreview) {
-      detach = api.attachMockPreview(el)
-    }
-  },
-  { immediate: true, flush: 'post' },
-)
-
 watch(
   () => props.status,
   (status) => {
@@ -50,17 +32,14 @@ watch(
     }
   },
 )
-
-onBeforeUnmount(stopMock)
 </script>
 
 <template>
   <div class="pane">
     <!-- Live feed -->
     <template v-if="status === 'live'">
-      <canvas v-if="isMock" ref="canvas" class="pane__layer" />
       <img
-        v-else-if="!streamFailed"
+        v-if="!streamFailed"
         class="pane__layer"
         :src="streamUrl"
         alt="Live camera preview"

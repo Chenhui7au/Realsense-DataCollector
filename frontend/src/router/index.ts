@@ -95,10 +95,13 @@ router.beforeEach(async (to) => {
     if (index !== current.current_stage) {
       return locationForSession(current)
     }
-    // A saved stage has nothing left to capture.
-    if (stage.state === 'saved') {
-      return { name: 'guide', params: { index: String(index) } }
-    }
+    /*
+     * A saved current stage is reachable on purpose. The capture screen is the
+     * only place that owns Re-record, and the guide screen for a saved stage
+     * tells the collector to use it, so redirecting here would send them to a
+     * button they cannot reach. It also keeps the discard and re-record flow in
+     * one place instead of duplicating it on the guide screen.
+     */
     return true
   }
 

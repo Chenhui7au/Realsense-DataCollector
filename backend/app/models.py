@@ -11,9 +11,11 @@ Every field documented as nullable is declared ``Optional``. That is what makes
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+from .sessions import BAG_NAME
 
 
 # ------------------------------------------------------------------ sections
@@ -98,6 +100,64 @@ class SessionListResponse(BaseModel):
     sessions: List[SessionSummary] = Field(default_factory=list)
 
 
+# ------------------------------------------------------- sessions and recording
+
+class SessionCreateBody(BaseModel):
+    """Body of ``POST /api/sessions``. Only the name is required."""
+
+    name: str
+    operator: Optional[str] = None
+    note: Optional[str] = None
+
+
+class SessionDeleteResult(BaseModel):
+    session_id: str
+    deleted: bool
+    removed_dir: Optional[str] = None
+
+
+class PreviewResult(BaseModel):
+    streaming: bool
+    stream_url: Optional[str] = None
+    auto_saved: bool = False
+
+
+class RecordNoteBody(BaseModel):
+    """Body of ``record/start``. Everything is optional."""
+
+    note: Optional[str] = None
+
+
+class StartRecordResult(BaseModel):
+    stage_index: int
+    state: Literal["recording"]
+    started_at: str
+    # Absolute, unlike StageArtifact.bag_path which is session relative.
+    bag_abs_path: str
+    auto_stop_at_s: float
+
+
+class StopRecordResult(BaseModel):
+    stage_index: int
+    state: Literal["saved"]
+    artifact: StageArtifact
+
+
+class DiscardRecordResult(BaseModel):
+    stage_index: int
+    state: Literal["idle"]
+    deleted: List[str] = Field(default_factory=list)
+
+
+class AdvanceResult(BaseModel):
+    session: Session
+    # Not a typed model on purpose. docs/API.md section 6.10 specifies two exact
+    # shapes, ``{"type": "guide", "stage_index": 2}`` and ``{"type": "finish"}``,
+    # and a typed model with an optional field would serialise the finish case as
+    # ``{"type": "finish", "stage_index": null}``.
+    next: Dict[str, Any] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------- health
 
 class Health(BaseModel):
@@ -118,6 +178,14 @@ class PreviewConfig(BaseModel):
 class RecordingConfig(BaseModel):
     min_duration_s: float
     max_duration_s_default: float
+    # The on disk file name, so the screens that describe the output before a take
+    # exists do not have to keep their own copy of it. It has to end in .db3, which
+    # the SDK enforces, so it is not something the frontend should guess at.
+    output_name: str = BAG_NAME
+    # Derived from the configured streams, for the running size gauge on the capture
+    # screen. A hardcoded guess here was four times too low, which made the gauge
+    # worse than useless when the point of it is watching disk usage.
+    bytes_per_second: int = 0
 
 
 class StageConfig(BaseModel):

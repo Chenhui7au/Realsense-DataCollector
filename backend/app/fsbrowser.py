@@ -15,7 +15,6 @@ import logging
 import os
 import re
 import stat
-import string
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -74,44 +73,80 @@ class FsBrowser:
 
     # ----------------------------------------------------------- shortcuts
 
+    def volume_roots(self) -> List[str]:
+        """Allowed roots that are whole volumes present on the host, in config order.
+
+        These are what the picker offers as jump points. An allowed root that is a
+        folder rather than a volume, such as a home directory, is not one: the
+        operator can reach it by descending from its volume, and listing it as a
+        peer of ``C:\\`` suggests it sits outside the volume it is on.
+
+        A configured volume that is not currently mounted is left out. ``allow_roots``
+        is a standing permission, so it may name a removable drive that is away, and
+        offering a jump point that always fails is worse than not offering it.
+        """
+        return [
+            root
+            for root in self.allowed_roots()
+            if paths.is_root(root) and os.path.isdir(root)
+        ]
+
     def _shortcuts(self) -> List[Dict[str, str]]:
         """Jump points for the picker sidebar. The service decides these.
 
-        Frontend hardcoding was rejected because the set depends on what exists
-        on the host. A container without ``/Volumes`` should not offer it.
-        """
-        home = self.home()
-        candidates: List[tuple] = [("Home", home)]
-        for label, folder in (
-            ("Desktop", "Desktop"),
-            ("Documents", "Documents"),
-            ("Downloads", "Downloads"),
-        ):
-            candidates.append((label, os.path.join(home, folder)))
-        for label, root in (("Volumes", "/Volumes"), ("Media", "/media"), ("Mounts", "/mnt")):
-            candidates.append((label, root))
-        if os.name == "nt":
-            # A drive root is the only way to reach another volume on Windows.
-            for drive in string.ascii_uppercase:
-                root = f"{drive}:\\"
-                if os.path.isdir(root):
-                    candidates.append((f"{drive}:", root))
-        if self.project.root:
-            candidates.append(("Project", self.project.root))
+        Only the volumes capture data may live on. Person-centric folders such as
+        Home, Desktop and Downloads were removed: this picker exists to choose
+        where recordings go, so offering the operator's desktop is noise, and it
+        made the list long enough that the drives were lost among it.
 
-        seen: List[str] = []
-        shortcuts: List[Dict[str, str]] = []
-        for label, candidate in candidates:
-            normalized = paths.normalize(candidate)
-            if normalized in seen:
-                continue
-            if not os.path.isdir(normalized):
-                continue
-            if not self.is_allowed(normalized):
-                continue
-            seen.append(normalized)
-            shortcuts.append({"name": label, "path": normalized})
-        return shortcuts
+        Frontend hardcoding was rejected because the set depends on the host. A
+        deployment without ``D:\\`` should not offer it.
+        """
+        return [
+            {"name": self._volume_label(root), "path": root} for root in self.volume_roots()
+        ]
+
+    @staticmethod
+    def _volume_label(root: str) -> str:
+        """Sidebar label for a volume root: ``C:`` on Windows, ``/`` elsewhere."""
+        stripped = root.rstrip("\\/")
+        if not stripped:
+            return root
+        if len(stripped) == 2 and stripped[1] == ":":
+            return stripped.upper()
+        return stripped
+
+    def preferred_root(self) -> str:
+        """Where the picker opens when the caller has no preference.
+
+        The configured project directory when there is one. Otherwise the first
+        allowed volume that is not the system volume, because capture data belongs
+        on a data volume. Falling back to the first allowed volume and then to the
+        service home covers a range made up of folders only, which is what a
+        deployment that never listed a drive would have.
+        """
+        if self.project.root:
+            return paths.normalize(self.project.root)
+        volumes = self.volume_roots()
+        system = self._system_volume()
+        for root in volumes:
+            if root != system:
+                return root
+        if volumes:
+            return volumes[0]
+        return self.home()
+
+    @staticmethod
+    def _system_volume() -> str:
+        r"""The volume the operating system is installed on, ``C:\`` on Windows.
+
+        Empty elsewhere, which makes the "not the system volume" preference fall
+        through to the first allowed volume.
+        """
+        drive = os.environ.get("SystemDrive") or os.environ.get("SystemRoot", "")[:2]
+        if not drive:
+            return ""
+        return paths.normalize(f"{drive}\\")
 
     @staticmethod
     def home() -> str:
@@ -120,9 +155,15 @@ class FsBrowser:
     # ----------------------------------------------------------------- list
 
     def list_directory(self, raw_path: Optional[str], show_hidden: bool = False) -> Dict[str, Any]:
-        """List subdirectories of ``raw_path``, defaulting to the service home."""
+        """List subdirectories of ``raw_path``, defaulting to the preferred root.
+
+        The default is docs/API.md section 4.5: the project directory when one is
+        configured, otherwise the data volume the picker should open on. It used to
+        be the service user's home directory, which put the operator somewhere
+        recordings must never be written.
+        """
         if raw_path is None or not str(raw_path).strip():
-            target = self.home()
+            target = self.preferred_root()
         else:
             target = paths.expand(str(raw_path).strip())
 

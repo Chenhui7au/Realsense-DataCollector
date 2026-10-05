@@ -11,7 +11,7 @@
 
 app:
   # Shown as the heading on every screen.
-  title: "D435i Capture"
+  title: "RealSense Data-Collector"
   host: "127.0.0.1"
   port: 8000
   # Origins allowed to call /api when the frontend is served from another
@@ -74,6 +74,13 @@ guides:
   persist: true
   # Rebuild manifest entries from files already sitting in the guide directory.
   rebuild_from_dir: true
+  # Draw a schematic diagram for every stage while the guide directory is still
+  # empty, so a fresh service can run a whole round without eight prepared images
+  # first. Only ever applied to an empty directory: once anything exists here
+  # nothing is added automatically, and deleting the directory is how you get the
+  # set back. Replace the drawings from the diagrams screen when you have the
+  # real ones.
+  seed_defaults: true
   # Keep the previous manifest as manifest.json.bak before each write.
   keep_backup: true
 
@@ -94,14 +101,20 @@ camera:
     min_duration_s: 1
     max_duration_s: 300
     colorize_depth: false
-    # Still to be confirmed with the end user, particularly whether the second
-    # infrared stream is needed. Changing this section is enough, no code change.
+    # Verified against a real D435I, SDK 2.58, firmware 5.17.3.10, by asking the
+    # device which profiles it offers. Two constraints are not guessable from the
+    # documentation and both make the whole request fail to resolve:
+    #   * the accelerometer offers 100, 200 and 400 Hz only, not 63
+    #   * the gyroscope offers 200 and 400 Hz only
+    # Depth 848x480, both infrared at 848x480 and colour 640x480 all coexist at
+    # 30 fps, and that set records and plays back. Changing this section is enough,
+    # no code change.
     streams:
       depth:      { width: 848, height: 480, format: z16, fps: 30 }
       color:      { width: 640, height: 480, format: bgr8, fps: 30 }
       infrared_1: { width: 848, height: 480, format: y8,  fps: 30 }
       infrared_2: { width: 848, height: 480, format: y8,  fps: 30 }
-      accel:      { format: motion_xyz32f, fps: 63 }
+      accel:      { format: motion_xyz32f, fps: 100 }
       gyro:       { format: motion_xyz32f, fps: 200 }
 
 storage:

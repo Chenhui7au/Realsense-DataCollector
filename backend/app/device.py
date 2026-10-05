@@ -117,6 +117,9 @@ class DeviceProbe:
         # bury real errors. Keyed on the kind as well as the detail.
         self._last_logged_kind: Optional[str] = None
         self._last_logged_detail: Optional[str] = None
+        # The failure category behind the last probe. Kept as a plain attribute
+        # rather than a property so a test can stand in a camera without a device.
+        self.last_kind: Optional[str] = None
 
     # ----------------------------------------------------------------- probe
 
@@ -234,6 +237,7 @@ class DeviceProbe:
 
         self._last_logged_kind = None
         self._last_logged_detail = None
+        self.last_kind = "connected"
         return {
             "connected": True,
             "name": chosen.get("name"),
@@ -251,6 +255,11 @@ class DeviceProbe:
             log.debug("camera still unavailable (%s): %s", kind, detail)
         self._last_logged_kind = kind
         self._last_logged_detail = detail
+        # Remembered so callers can tell "nothing is plugged in" apart from "a
+        # device is there but the service cannot open it". The two map to
+        # DEVICE_NOT_FOUND and DEVICE_BUSY respectively in docs/API.md section 6.2.
+        # Deliberately not part of the response, which has a fixed field set.
+        self.last_kind = kind
         return {
             "connected": False,
             "name": None,

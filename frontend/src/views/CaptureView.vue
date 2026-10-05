@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, isMock } from '@/api'
+import { api } from '@/api'
 import AppButton from '@/components/AppButton.vue'
 import CaptureControls from '@/components/CaptureControls.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -44,6 +44,17 @@ const stage = computed(() => stageAt(props.index))
 const stageConfig = computed(() => config.value?.stages.find((s) => s.index === props.index) ?? null)
 
 /*
+ * How much disk a running take is using, and the name of the file it lands in.
+ * Both come from the service, which owns the recording streams and the .db3 rule.
+ * The gauge used to multiply elapsed time by a hand measured constant here, which
+ * was four times too low, so it understated the one number it exists to show.
+ */
+const bytesPerSecond = computed(() => config.value?.recording.bytes_per_second || null)
+const outputName = computed(() => config.value?.recording.output_name ?? '')
+/** Used only when the service could not derive a rate, so the gauge still shows. */
+const FALLBACK_BYTES_PER_S = 60 * 1024 * 1024
+
+/*
  * Limits come from the session's frozen stage object when there is one. Reading
  * the live config instead would let the countdown disagree with the backend's
  * own auto-stop if the YAML changed mid-session.
@@ -63,7 +74,9 @@ const position = computed(
 )
 
 /** Rough figure so the collector can watch disk usage while a take runs. */
-const estimatedBytes = computed(() => Math.round(elapsed.value * 17.4 * 1024 * 1024))
+const estimatedBytes = computed(() =>
+  Math.round(elapsed.value * (bytesPerSecond.value ?? FALLBACK_BYTES_PER_S)),
+)
 
 const overlayVisible = computed(() => previewBusy.value || previewStatus.value === 'starting')
 const overlayLabel = computed(() =>
@@ -137,12 +150,13 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopPolling()
-  // sendBeacon survives the page unloading, which a plain fetch does not. The
-  // mock has no HTTP endpoint, so it is called directly instead.
+  /*
+   * sendBeacon survives the page unloading, which a plain fetch does not. The
+   * service treats this route as idempotent and tolerates an empty body because of
+   * it; see docs/API.md section 6.6.
+   */
   if (session.value) {
-    if (isMock) {
-      void api.stopPreview(session.value.session_id).catch(() => undefined)
-    } else if (navigator.sendBeacon) {
+    if (navigator.sendBeacon) {
       navigator.sendBeacon(`/api/sessions/${session.value.session_id}/preview/stop`)
     } else {
       void closePreview()
@@ -337,7 +351,7 @@ async function leaveForHome() {
             <dt>Minimum</dt>
             <dd>{{ minDuration }} s</dd>
             <dt>Output</dt>
-            <dd>capture.bag</dd>
+            <dd>{{ outputName }}</dd>
           </template>
         </dl>
 

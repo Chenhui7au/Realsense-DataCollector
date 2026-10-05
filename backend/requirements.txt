@@ -1,24 +1,28 @@
 # Backend dependencies. The project runs on the conda base interpreter, so this
 # file is a record of what must be present, not a virtualenv recipe.
 #
-# Verified present in conda base on 2026-09-21:
-#   Python  3.10.14
-#   fastapi 0.116.1
-#   uvicorn 0.35.0
-#   pydantic 2.12.5
-#   PyYAML  6.0.1
-#   Pillow  10.3.0
-#   python-multipart 0.0.20  (required by FastAPI for multipart uploads)
+# Verified present in conda base on 2026-10-05:
+#   Python  3.14.7
+#   fastapi 0.142.2
+#   uvicorn 0.54.0
+#   pydantic 2.13.4
+#   PyYAML  6.0.3
+#   Pillow  12.3.0
+#   python-multipart 0.0.32  (required by FastAPI for multipart uploads)
+#   pyrealsense2 2.58.4.10922  (needed for capture, see the note at the bottom)
 
 fastapi>=0.110
 uvicorn>=0.27
 pydantic>=2.6
 PyYAML>=6.0
-Pillow>=10.0
+# 10.1 is the floor because app.diagrams needs ImageFont.load_default(size=),
+# which arrived in that release. Older Pillow raises TypeError on it.
+Pillow>=10.1
 python-multipart>=0.0.9
 
-# Imported lazily by app.device, through a child process. The service starts and
-# every non camera endpoint works with this absent.
+# Imported lazily by app.camera and app.device, through a child process. The
+# service starts, every non camera endpoint works and the whole test suite runs
+# with this absent, because camera.probe false refuses a real pipeline.
 #
 # Windows: install the official wheel.
 #   pip install pyrealsense2
@@ -30,4 +34,4 @@ python-multipart>=0.0.9
 # do the real capture on Windows.
 #   pip install pyrealsense2-macosx
 #
-# pyrealsense2>=2.55
+pyrealsense2>=2.55

@@ -12,8 +12,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
+import string
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import List
 
 import pytest
 import yaml
@@ -24,6 +29,8 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app import diagrams  # noqa: E402
+from app import guides as guides_manifest  # noqa: E402
 from app.config import ConfigError, load_config  # noqa: E402
 from app.main import create_app  # noqa: E402
 
@@ -38,6 +45,7 @@ def write_config(
     guides_overrides=None,
     stages=8,
     default_root="",
+    recording_streams=None,
 ) -> Path:
     config_dir = base / "conf"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +59,7 @@ def write_config(
         for index in range(1, stages + 1)
     ]
     payload = {
-        "app": {"title": "D435i Capture", "host": "127.0.0.1", "port": 8123},
+        "app": {"title": "RealSense Data-Collector", "host": "127.0.0.1", "port": 8123},
         "paths": {
             "service_dir": "../var",
             "guide_root": "../var/guides",
@@ -79,6 +87,10 @@ def write_config(
             "persist": True,
             "rebuild_from_dir": True,
             "keep_backup": True,
+            # Off here so the upload tests still start from an empty directory.
+            # The seeding tests set it back on through guides_overrides, and
+            # test_seed_defaults_is_on_in_the_shipped_config covers the default.
+            "seed_defaults": False,
         },
         "camera": {
             "probe": False,
@@ -95,6 +107,8 @@ def write_config(
     }
     if guides_overrides:
         payload["guides"].update(guides_overrides)
+    if recording_streams is not None:
+        payload["camera"]["recording"]["streams"] = recording_streams
 
     path = config_dir / "config.yaml"
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
@@ -160,9 +174,15 @@ def test_health_is_degraded_without_a_camera(client):
 
 def test_config_exposes_only_presession_fields(client):
     body = client.get("/api/config").json()
-    assert body["app_title"] == "D435i Capture"
+    assert body["app_title"] == "RealSense Data-Collector"
     assert body["total_stages"] == 8
-    assert body["recording"] == {"min_duration_s": 1, "max_duration_s_default": 300}
+    assert body["recording"]["min_duration_s"] == 1
+    assert body["recording"]["max_duration_s_default"] == 300
+    # The output name and the size rate are part of the contract because the
+    # screens that describe a take before it exists read them from here.
+    assert body["recording"]["output_name"] == "capture.db3"
+    # The test config records depth 848x480 z16 at 30 fps: 848 * 480 * 2 * 30.
+    assert body["recording"]["bytes_per_second"] == 848 * 480 * 2 * 30
     assert body["preview"] == {"fps": 15, "jpeg_quality": 80}
     assert len(body["stages"]) == 8
     assert body["stages"][0] == {
@@ -176,16 +196,90 @@ def test_config_exposes_only_presession_fields(client):
     assert "camera" not in body
 
 
+def test_the_size_rate_tracks_the_configured_streams(env):
+    """It is derived rather than measured, so a config change moves it."""
+    cases = [
+        ({"color": {"width": 640, "height": 480, "format": "bgr8", "fps": 30}}, 640 * 480 * 3 * 30),
+        ({"color": {"width": 1280, "height": 720, "format": "bgr8", "fps": 15}}, 1280 * 720 * 3 * 15),
+        ({"depth": {"width": 848, "height": 480, "format": "z16", "fps": 30}}, 848 * 480 * 2 * 30),
+        ({"infrared_1": {"width": 848, "height": 480, "format": "y8", "fps": 30}}, 848 * 480 * 1 * 30),
+    ]
+    for streams, expected in cases:
+        config = load_config(
+            write_config(env["base"], allow_roots=[str(env["library"])], recording_streams=streams)
+        )
+        assert config.recording_bytes_per_s == expected, streams
+
+
+def test_the_size_rate_counts_a_motion_sample_as_three_floats(env):
+    config = load_config(
+        write_config(
+            env["base"],
+            allow_roots=[str(env["library"])],
+            recording_streams={"accel": {"format": "motion_xyz32f", "fps": 100}},
+        )
+    )
+    assert config.recording_bytes_per_s == 12 * 100
+
+
+def test_the_size_rate_of_the_shipped_config_matches_a_measured_take():
+    """73 MB/s predicted against 59 to 71 MB/s measured on a real D435I.
+
+    The gauge exists to warn about disk use, so understating is the failure that
+    matters. This asserts it is not understating.
+    """
+    config = load_config(BACKEND_DIR / "config" / "config.yaml")
+    predicted_mb = config.recording_bytes_per_s / 1024 / 1024
+    assert 70 <= predicted_mb <= 80, predicted_mb
+    # 1064747008 bytes over 14.3 s, the longest take measured through the UI.
+    assert predicted_mb >= (1064747008 / 14.3) / 1024 / 1024
+
+
 def test_unknown_api_route_uses_the_envelope(client):
     response = client.get("/api/does-not-exist")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_pending_camera_routes_answer_501(client):
-    response = client.post("/api/sessions")
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "NOT_IMPLEMENTED"
+def test_session_creation_needs_a_camera(client):
+    """The camera is checked first because it is the one precondition the
+    collector cannot resolve from the page they are on. This config has probing
+    off, so the service reports no device rather than pretending to proceed."""
+    response = client.post("/api/sessions", json={"name": "session_a"})
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DEVICE_NOT_FOUND"
+
+
+def test_session_list_is_empty_without_a_project_directory(client):
+    """No project directory is a normal first run state, not an error."""
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    assert response.json() == {"project_root": None, "sessions": []}
+
+
+def test_recording_on_an_unknown_session_is_a_404(client):
+    response = client.post("/api/sessions/nope/stages/1/record/start", json={})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "SESSION_NOT_FOUND"
+
+
+def test_preview_stop_accepts_an_empty_body(client):
+    """sendBeacon sends no payload and cannot set a content type. A declared
+    body here would produce a 422 the frontend cannot parse."""
+    response = client.post("/api/sessions/nope/preview/stop")
+    assert response.status_code == 200
+    assert response.json()["streaming"] is False
+
+
+def test_preview_snapshot_without_a_camera_reports_the_device(client):
+    """The suite runs with camera.probe off, which must stop the service touching
+    the hardware at all. A frame request therefore fails on the device, not on a
+    missing preview."""
+    response = client.get("/api/preview/snapshot")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "DEVICE_NOT_FOUND"
+    assert body["error"]["detail"]["reason"] == "probe_disabled"
 
 
 def test_body_validation_error_is_wrapped(client):
@@ -413,6 +507,30 @@ def test_configured_root_survives_a_tightened_allow_range(env):
 
 # --------------------------------------------------------------- filesystem
 
+def host_volumes() -> List[str]:
+    r"""Volume roots that exist on this host, in drive order.
+
+    Empty off Windows, where a drive letter is not how volumes are named. Used by
+    the tests that need a real volume root to exercise Places, since a volume has
+    to be one the host actually has or the code under test filters it out.
+    """
+    if os.name != "nt":
+        return []
+    return [
+        f"{letter}:\\"
+        for letter in string.ascii_uppercase
+        if os.path.isdir(f"{letter}:\\")
+    ]
+
+
+def absent_drive_letter() -> str:
+    """A drive letter with nothing mounted on it."""
+    for letter in reversed(string.ascii_uppercase):
+        if not os.path.isdir(f"{letter}:\\"):
+            return letter
+    raise AssertionError("every drive letter is in use")
+
+
 def test_listing_reports_parents_entries_and_flags(client, env):
     (env["library"] / "ProjectA" / "session_one").mkdir()
     (env["library"] / "ProjectA" / "session_one" / "session.json").write_text("{}")
@@ -474,33 +592,113 @@ def test_listing_reports_the_root_of_a_volume_as_unusable(client, env):
     assert body["error"]
 
 
-def test_shortcuts_offer_only_reachable_places(tmp_path):
-    """A shortcut that would be refused as out of range is worse than no shortcut."""
+def test_places_offer_only_the_allowed_volumes(client, env):
+    """Drives, not person-centric folders. This picker chooses where recordings
+    go, so a desktop or downloads entry is noise that buries the drives."""
+    # The test range is a folder, not a volume, so Places is empty by rule.
+    body = client.get("/api/fs/list", params={"path": str(env["library"])}).json()
+    assert body["shortcuts"] == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows concept")
+def test_places_list_the_configured_volumes_with_drive_labels(tmp_path):
+    system = host_volumes()[0]
+    config = write_config(tmp_path, allow_roots=[str(tmp_path / "library"), system])
+    (tmp_path / "library").mkdir(exist_ok=True)
+
+    with TestClient(create_app(config)) as client:
+        body = client.get("/api/fs/list", params={"path": str(tmp_path / "library")}).json()
+
+    assert body["shortcuts"] == [{"name": system.rstrip("\\").upper(), "path": system}]
+    names = [item["name"] for item in body["shortcuts"]]
+    assert not {"Home", "Desktop", "Documents", "Downloads", "Volumes", "Media"} & set(names)
+    # And every place must be usable, which was the old test's point.
+    for item in body["shortcuts"]:
+        assert Path(item["path"]).is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows concept")
+def test_places_leave_out_a_configured_volume_that_is_absent(tmp_path):
+    """allow_roots is a standing permission, so it can name a removable drive that
+    is not plugged in. Offering a jump point that always fails is worse than not
+    offering it."""
+    library = tmp_path / "library"
+    library.mkdir()
+    absent = f"{absent_drive_letter()}:\\"
+    config = write_config(tmp_path, allow_roots=[str(library), host_volumes()[0], absent])
+
+    with TestClient(create_app(config)) as client:
+        body = client.get("/api/fs/list", params={"path": str(library)}).json()
+
+    assert absent not in [item["path"] for item in body["shortcuts"]]
+    assert len(body["shortcuts"]) == 1
+
+
+def test_the_label_of_a_volume_is_its_drive_letter(tmp_path):
+    """Checked directly, because it needs a volume root that is a volume root."""
+    library = tmp_path / "library"
+    library.mkdir()
+    config = write_config(tmp_path, allow_roots=[str(library)])
+
+    with TestClient(create_app(config)) as client:
+        browser = client.app.state.services.fsbrowser
+
+    assert browser._volume_label("C:\\") == "C:"
+    assert browser._volume_label("d:\\") == "D:", "case is normalised for the label"
+    assert browser._volume_label("/") == "/"
+    assert browser._volume_label("/mnt") == "/mnt"
+
+
+def test_the_picker_opens_on_the_project_when_one_is_set(client, env):
+    target = env["library"] / "ProjectA"
+    assert client.put("/api/project", json={"root": str(target)}).status_code == 200
+    body = client.get("/api/fs/list").json()
+    assert body["path"] == str(target)
+
+
+def test_the_picker_falls_back_to_home_when_no_volume_is_allowed(tmp_path):
+    """Reached when allow_roots names folders only, which is the macOS shape."""
     library = tmp_path / "library"
     library.mkdir()
     config = write_config(tmp_path, allow_roots=["~", str(library)])
 
     with TestClient(create_app(config)) as client:
-        body = client.get("/api/fs/list", params={"path": str(library)}).json()
-        names = [item["name"] for item in body["shortcuts"]]
-        assert "Home" in names
-        # Checked against the range, not against the host's permission model. A
-        # macOS TCC restricted folder can still answer 403 DIR_NOT_READABLE, and
-        # that is not what this test is about.
-        for shortcut in body["shortcuts"]:
-            response = client.get("/api/fs/list", params={"path": shortcut["path"]})
-            assert response.status_code != 403 or (
-                response.json()["error"]["code"] != "PATH_NOT_ALLOWED"
-            )
+        body = client.get("/api/fs/list").json()
+        assert body["shortcuts"] == []
+        assert body["path"] == body["home"]
 
 
-def test_configured_project_appears_as_a_shortcut(client, env):
-    target = env["library"] / "ProjectA"
-    assert client.put("/api/project", json={"root": str(target)}).status_code == 200
-    body = client.get("/api/fs/list", params={"path": str(env["library"])}).json()
-    shortcut = next(item for item in body["shortcuts"] if item["name"] == "Project")
-    assert shortcut["path"] == str(target)
-    assert str(Path.home()) not in [item["path"] for item in body["shortcuts"]]
+@pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows concept")
+def test_the_picker_opens_on_a_data_volume_rather_than_the_system_one(tmp_path):
+    """Capture data belongs on a data volume. This is what makes a fresh rig open
+    on D: instead of dropping the operator into C:\\Users."""
+    volumes = host_volumes()
+    if len(volumes) < 2:
+        pytest.skip("this host has a single volume, so there is no data volume to prefer")
+    library = tmp_path / "library"
+    library.mkdir()
+    config = write_config(tmp_path, allow_roots=[str(library), *volumes])
+
+    with TestClient(create_app(config)) as client:
+        body = client.get("/api/fs/list").json()
+
+    assert body["path"] != os.environ.get("SystemDrive", "C:") + "\\"
+    assert body["path"] in volumes
+    # The chosen volume is also the one flagged as current in the sidebar.
+    assert body["path"] in [item["path"] for item in body["shortcuts"]]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows concept")
+def test_the_picker_opens_on_the_system_volume_when_it_is_the_only_one(tmp_path):
+    library = tmp_path / "library"
+    library.mkdir()
+    config = write_config(tmp_path, allow_roots=[str(library), host_volumes()[0]])
+
+    with TestClient(create_app(config)) as client:
+        body = client.get("/api/fs/list").json()
+
+    assert body["path"] == host_volumes()[0]
+    assert body["shortcuts"][0]["path"] == body["path"]
 
 
 def test_mkdir_creates_one_level_and_returns_the_parent_listing(client, env):
@@ -922,6 +1120,256 @@ def test_image_response_is_cacheable(client):
     assert response.status_code == 200
     assert "immutable" in response.headers["cache-control"]
     assert response.headers["etag"]
+
+
+def test_active_session_is_reported_so_a_new_tab_can_reattach(env):
+    """docs/API.md section 4.1. The field was hardcoded to null while sessions were
+    unimplemented, which left a running round invisible to a fresh page: the home
+    screen offered to start a new one and the backend then refused it."""
+    config_path = write_config(
+        env["base"], allow_roots=[str(env["library"])], guides_overrides={"seed_defaults": True}
+    )
+    with session_capable_client(config_path, env["library"] / "ProjectA") as client:
+        assert client.get("/api/health").json()["active_session"] is None
+
+        created = client.post("/api/sessions", json={"name": "round_one"}).json()
+        active = client.get("/api/health").json()["active_session"]
+
+        assert active is not None
+        assert active["session_id"] == created["session_id"]
+        assert active["name"] == "round_one"
+        assert active["status"] == "in_progress"
+        assert active["current_stage"] == 1
+        assert active["saved_count"] == 0
+        assert active["size_bytes"] == 0
+        assert active["data_dir"] == created["data_dir"]
+        assert set(active) == {
+            "session_id",
+            "name",
+            "created_at",
+            "finished_at",
+            "status",
+            "current_stage",
+            "saved_count",
+            "size_bytes",
+            "data_dir",
+        }
+
+
+def test_active_session_is_dropped_once_the_round_is_discarded(env):
+    config_path = write_config(
+        env["base"], allow_roots=[str(env["library"])], guides_overrides={"seed_defaults": True}
+    )
+    with session_capable_client(config_path, env["library"] / "ProjectA") as client:
+        sid = client.post("/api/sessions", json={"name": "round_one"}).json()["session_id"]
+        assert client.get("/api/health").json()["active_session"] is not None
+
+        assert client.delete(f"/api/sessions/{sid}").status_code == 200
+        assert client.get("/api/health").json()["active_session"] is None
+
+
+def test_active_session_survives_a_restart(env):
+    """The adopted session is what makes a service restart resumable in the UI."""
+    config_path = write_config(
+        env["base"], allow_roots=[str(env["library"])], guides_overrides={"seed_defaults": True}
+    )
+    project_root = env["library"] / "ProjectA"
+    with session_capable_client(config_path, project_root) as first:
+        first.post("/api/sessions", json={"name": "round_one"})
+
+    with session_capable_client(
+        config_path, project_root
+    ) as second:
+        active = second.get("/api/health").json()["active_session"]
+        assert active is not None
+        assert active["name"] == "round_one"
+        assert active["status"] == "in_progress"
+
+
+# --------------------------------------------------------- default diagrams
+def seeded_client(env, **guides_overrides):
+    """A client whose configuration seeds the placeholder diagrams."""
+    config_path = write_config(
+        env["base"],
+        allow_roots=[str(env["library"])],
+        guides_overrides={"seed_defaults": True, **guides_overrides},
+    )
+    return create_app(config_path)
+
+
+@contextmanager
+def session_capable_client(config_path, project_root: Path):
+    """A client that can create sessions in ``project_root``.
+
+    The suite runs with ``camera.probe`` off, which by design refuses a real
+    pipeline, so the device probe is stubbed the same way test_sessions does it.
+    Without that the camera is the first precondition create_session checks and
+    every session test would fail on 503.
+    """
+    app = create_app(config_path)
+    services = app.state.services
+    services.device.info = lambda force=False: {
+        "connected": True,
+        "name": "Fake D435I",
+        "serial": "FAKE123",
+        "firmware": "0.0.0",
+        "usb_type": "3.2",
+        "reason": None,
+    }
+    services.device.last_kind = "connected"
+    with TestClient(app) as client:
+        response = client.put("/api/project", json={"root": str(project_root)})
+        assert response.status_code == 200, response.text
+        yield client
+
+
+def test_seed_defaults_is_on_in_the_shipped_config():
+    """The rig has to be usable on first run without preparing eight images."""
+    config = load_config(BACKEND_DIR / "config" / "config.yaml")
+    assert config.guides_seed_defaults is True
+
+
+def test_seed_defaults_defaults_to_on_when_the_key_is_absent(env):
+    guides = load_config(env["config"])
+    assert guides.guides_seed_defaults is False, "the test config sets it explicitly"
+
+    raw = yaml.safe_load(env["config"].read_text(encoding="utf-8"))
+    del raw["guides"]["seed_defaults"]
+    env["config"].write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert load_config(env["config"]).guides_seed_defaults is True
+
+
+def test_an_empty_guide_directory_gets_the_default_set(env):
+    with TestClient(seeded_client(env)) as client:
+        body = client.get("/api/guides").json()
+        assert body["ready"] is True
+        assert body["uploaded"] == 8
+        assert body["missing_indices"] == []
+        assert [e["index"] for e in body["guides"] if e["configured"]] == list(range(1, 9))
+        for entry in body["guides"]:
+            assert entry["content_type"] == "image/png"
+            assert entry["width"] == diagrams.WIDTH
+            assert entry["height"] == diagrams.HEIGHT
+            assert entry["original_filename"] == f"default_stage_{entry['index']:02d}.png"
+            assert len(entry["sha256"]) == 64
+
+
+def test_a_default_diagram_is_served_and_decodes(env):
+    with TestClient(seeded_client(env)) as client:
+        response = client.get("/api/guides/1/image")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/png")
+        with Image.open(io.BytesIO(response.content)) as image:
+            assert image.size == (diagrams.WIDTH, diagrams.HEIGHT)
+            assert image.format == "PNG"
+
+
+def test_a_default_diagram_fits_the_configured_size_limit(env):
+    """max_size_mb is 1 in the test config. A default that exceeded it would be
+    rejected by the same validation an operator upload goes through."""
+    with TestClient(seeded_client(env)) as client:
+        for entry in client.get("/api/guides").json()["guides"]:
+            assert 0 < entry["size_bytes"] < 1024 * 1024
+
+
+def test_a_default_diagram_needs_no_downscaled_copy(env):
+    """Drawn at display_max_width, so the original is what the screen serves."""
+    with TestClient(seeded_client(env)) as client:
+        guides_dir = env["base"] / "var" / "guides"
+        assert not list(guides_dir.glob(f"*{guides_manifest.DISPLAY_INFIX}*"))
+        assert client.get("/api/guides/3/image?size=display").headers["content-type"].startswith(
+            "image/png"
+        )
+
+
+def test_seeding_never_touches_a_directory_that_already_holds_a_diagram(env):
+    guides_dir = env["base"] / "var" / "guides"
+    guides_dir.mkdir(parents=True, exist_ok=True)
+    (guides_dir / "stage_01.png").write_bytes(png_bytes())
+
+    with TestClient(seeded_client(env)) as client:
+        body = client.get("/api/guides").json()
+        assert body["uploaded"] == 1
+        assert [e["index"] for e in body["guides"] if e["configured"]] == [1]
+
+
+def test_seeding_never_touches_a_directory_that_already_holds_a_manifest(env):
+    guides_dir = env["base"] / "var" / "guides"
+    guides_dir.mkdir(parents=True, exist_ok=True)
+    (guides_dir / "manifest.json").write_text('{"version": 1, "stages": {}}', encoding="utf-8")
+
+    with TestClient(seeded_client(env)) as client:
+        body = client.get("/api/guides").json()
+        assert body["uploaded"] == 0
+        assert body["guides"][0]["configured"] is False
+
+
+def test_deleting_one_default_keeps_it_deleted_across_a_restart(env):
+    """The reason seeding is limited to a pristine directory: an operator who
+    removes a placeholder to put the real diagram in must not find it back."""
+    with TestClient(seeded_client(env)) as first:
+        assert first.delete("/api/guides/6").status_code == 200
+
+    with TestClient(seeded_client(env)) as second:
+        body = second.get("/api/guides").json()
+        assert body["uploaded"] == 7
+        assert body["guides"][5]["configured"] is False
+        assert body["ready"] is False
+
+
+def test_wiping_the_directory_brings_the_default_set_back(env):
+    guides_dir = env["base"] / "var" / "guides"
+    with TestClient(seeded_client(env)) as first:
+        for index in range(1, 9):
+            first.delete(f"/api/guides/{index}")
+
+    # delete() removes the files but leaves the manifest, which is not pristine.
+    with TestClient(seeded_client(env)) as after_deletes:
+        assert after_deletes.get("/api/guides").json()["uploaded"] == 0
+
+    shutil.rmtree(guides_dir)
+    with TestClient(seeded_client(env)) as after_wipe:
+        assert after_wipe.get("/api/guides").json()["uploaded"] == 8
+
+
+def test_an_upload_replaces_a_default_diagram(env):
+    with TestClient(seeded_client(env)) as client:
+        before = client.get("/api/guides").json()["guides"][0]["sha256"]
+        response = client.post(
+            "/api/guides/1", files={"file": ("real.png", png_bytes(400, 300), "image/png")}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["original_filename"] == "real.png"
+        assert body["width"] == 400 and body["height"] == 300
+        assert body["sha256"] != before
+        assert body["ready"] is True
+
+        guides_dir = env["base"] / "var" / "guides"
+        assert (guides_dir / "stage_01.png").is_file()
+        assert not list(guides_dir.glob("stage_01.display*")), "400px is under the limit"
+
+
+def test_seed_defaults_off_leaves_the_directory_empty(env):
+    with TestClient(create_app(env["config"])) as client:
+        body = client.get("/api/guides").json()
+        assert body["uploaded"] == 0
+        assert body["ready"] is False
+        # load() still writes its own empty manifest, which is long standing
+        # behaviour. What must be absent is any image.
+        images = [
+            path
+            for path in (env["base"] / "var" / "guides").iterdir()
+            if path.suffix.lower() in {".png", ".jpg", ".webp", ".bmp", ".gif"}
+        ]
+        assert images == []
+
+
+def test_every_stage_number_gets_its_own_drawing(env):
+    """Each diagram states its own stage, so no two stages share a picture."""
+    with TestClient(seeded_client(env)) as client:
+        digests = {e["sha256"] for e in client.get("/api/guides").json()["guides"]}
+        assert len(digests) == 8
 
 
 # --------------------------------------------------------------- persistence

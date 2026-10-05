@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import StageRail from './StageRail.vue'
 import type { RailItem } from './StageRail.vue'
-import { isMock } from '@/api'
 
 defineProps<{
   items: RailItem[]
@@ -20,13 +19,10 @@ defineProps<{
           <circle cx="15.6" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.5" />
           <circle cx="12" cy="12" r="1.05" fill="currentColor" />
         </svg>
-        <span class="hdr__word">D435i Capture</span>
+        <span class="hdr__word">RealSense Data-Collector</span>
       </RouterLink>
 
       <div class="hdr__meta">
-        <span v-if="isMock" class="hdr__badge" title="No camera is attached. Data is simulated.">
-          Mock
-        </span>
         <slot name="meta" />
       </div>
     </div>
@@ -72,8 +68,17 @@ defineProps<{
 
 .hdr__word {
   font-family: var(--font-display);
-  font-size: 1.3rem;
+  font-size: 1.15rem;
   letter-spacing: -0.005em;
+  /*
+   * The wordmark is a name, not a sentence. The bar is a fixed height, so the
+   * name must stay on one line even at the narrowest widths; below that it
+   * ellipsizes rather than pushing the bar wider.
+   */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .hdr__meta {
@@ -82,16 +87,5 @@ defineProps<{
   gap: var(--s4);
   font-size: var(--t-sm);
   color: var(--ink-500);
-}
-
-.hdr__badge {
-  font-size: var(--t-2xs);
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--warn);
-  background: var(--warn-bg);
-  border-radius: var(--r-full);
-  padding: 3px var(--s3);
 }
 </style>

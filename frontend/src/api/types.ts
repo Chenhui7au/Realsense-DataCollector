@@ -124,7 +124,18 @@ export interface AppConfig {
   total_stages: number
   preview: { fps: number; jpeg_quality: number }
   /** Only used before a session exists. A running session carries its own. */
-  recording: { min_duration_s: number; max_duration_s_default: number }
+  recording: {
+    min_duration_s: number
+    max_duration_s_default: number
+    /**
+     * On disk name of one take, from the service. It must end in .db3, which the
+     * SDK enforces, so the screens that describe the output before a take exists
+     * read it from here rather than hardcoding it.
+     */
+    output_name: string
+    /** Derived from the configured streams, for the running size gauge. */
+    bytes_per_second: number
+  }
   stages: StageConfig[]
 }
 
@@ -284,8 +295,8 @@ export interface ApiErrorBody {
 }
 
 /*
- * The surface both the real client and the mock implement. Screens only ever
- * talk to this interface, so switching backends is a build time concern.
+ * The surface the HTTP client exposes. Screens only ever talk to this
+ * interface, never to fetch directly.
  */
 export interface CaptureApi {
   health(): Promise<Health>
@@ -327,11 +338,4 @@ export interface CaptureApi {
   stopRecord(sid: string, index: number): Promise<StopRecordResult>
   discardRecord(sid: string, index: number): Promise<DiscardRecordResult>
   advance(sid: string, index: number): Promise<AdvanceResult>
-
-  /**
-   * Mock only. Drives a synthetic feed into a canvas so the capture screen is
-   * demonstrable without hardware. Real backend renders the MJPEG stream into
-   * an img element instead.
-   */
-  attachMockPreview?(canvas: HTMLCanvasElement): () => void
 }
