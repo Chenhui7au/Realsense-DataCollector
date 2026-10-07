@@ -94,6 +94,8 @@ STAGE_POSES: Dict[int, Pose] = {
     6: Pose(azimuth=0, elevation=0, distance_cm=30),
     7: Pose(azimuth=0, elevation=0, distance_cm=150),
     8: Pose(azimuth=0, elevation=0, distance_cm=60, sweep=True),
+    9: Pose(azimuth=-90, elevation=0, distance_cm=60),
+    10: Pose(azimuth=90, elevation=0, distance_cm=60),
 }
 
 

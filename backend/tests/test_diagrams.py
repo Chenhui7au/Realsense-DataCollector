@@ -23,6 +23,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app import diagrams  # noqa: E402
+from app.config import load_config  # noqa: E402
 
 SHIPPED_STAGE_NAMES = [
     "Front, level",
@@ -33,6 +34,8 @@ SHIPPED_STAGE_NAMES = [
     "Close range, 30 cm",
     "Far range, 150 cm",
     "Orbit sweep",
+    "Left profile, 90 degrees",
+    "Right profile, 90 degrees",
 ]
 
 
@@ -42,6 +45,18 @@ def render(index: int, name: str) -> Image.Image:
 
 def sample(image: Image.Image, point) -> tuple:
     return image.getpixel((round(point[0]), round(point[1])))[:3]
+
+
+# A bearing clear of every shipped camera position, in the same convention as
+# ``Pose.azimuth``. Used to sample the static rings independently of the markers.
+PLAN_RING_PROBE_DEGREES = -20
+
+
+def plan_point(azimuth: int, radius: float) -> tuple:
+    """Point at ``radius`` from the subject, on a bearing of ``azimuth``."""
+    cx, cy = diagrams.plan_center()
+    radians = math.radians(azimuth)
+    return (cx + math.sin(radians) * radius, cy - math.cos(radians) * radius)
 
 
 def is_close(pixel, target, tolerance: int = 30) -> bool:
@@ -59,15 +74,21 @@ def test_a_pose_exists_for_every_shipped_stage():
     assert set(diagrams.STAGE_POSES) == set(range(1, len(SHIPPED_STAGE_NAMES) + 1))
 
 
+def test_the_name_list_matches_the_shipped_stage_pool():
+    """The names above drive the parametrised drawing tests, so they cannot drift."""
+    shipped = load_config(BACKEND_DIR / "config" / "config.yaml")
+    assert [str(stage["name"]) for stage in shipped.stages] == SHIPPED_STAGE_NAMES
+
+
 def test_an_unknown_stage_falls_back_to_a_neutral_pose():
     assert diagrams.pose_for(99) is diagrams.DEFAULT_POSE
 
 
 def test_each_stage_gets_a_different_pose_somewhere():
     """Stages may share a distance, but no two may be identical in every axis."""
-    poses = [diagrams.pose_for(i) for i in range(1, 9)]
+    poses = [diagrams.pose_for(i) for i in range(1, len(SHIPPED_STAGE_NAMES) + 1)]
     signatures = {(p.azimuth, p.elevation, p.distance_cm, p.sweep) for p in poses}
-    assert len(signatures) == 8
+    assert len(signatures) == len(SHIPPED_STAGE_NAMES)
 
 
 def test_the_plan_radius_grows_with_distance():
@@ -139,9 +160,12 @@ def test_a_rendered_diagram_has_its_static_furniture(index, name):
     assert is_close(sample(image, (centre_x - 60, centre_y - diagrams.TARGET_SIZE / 2)), diagrams.INK)
     assert is_close(sample(image, (centre_x - 60, centre_y - 60)), diagrams.TARGET_FILL)
 
-    # The two guidance rings, sampled to the left where the camera never reaches.
+    # The two guidance rings. Probed off to the left of straight ahead: the
+    # shipped poses all sit on the axes and the diagonals, and the left profile
+    # stage puts its camera body on the left midline, right on the ring.
+    ring_probe = PLAN_RING_PROBE_DEGREES
     for radius in diagrams.RING_RADII:
-        assert is_close(sample(image, (centre_x - radius, centre_y)), diagrams.RING, 12), radius
+        assert is_close(sample(image, plan_point(ring_probe, radius)), diagrams.RING, 12), radius
 
     assert is_close(sample(image, (170, 70)), diagrams.ACCENT), "DEFAULT chip"
     assert sample(image, (diagrams.WIDTH - 40, diagrams.HEIGHT - 40)) == (255, 255, 255)
@@ -195,7 +219,7 @@ def test_a_long_stage_name_is_shrunk_rather_than_run_off_the_canvas():
 
 def test_every_stage_renders_a_distinct_image():
     digests = {diagrams.placeholder_png(i, n) for i, n in enumerate(SHIPPED_STAGE_NAMES, start=1)}
-    assert len(digests) == 8
+    assert len(digests) == len(SHIPPED_STAGE_NAMES)
 
 
 def test_a_diagram_is_a_png_and_comfortably_under_the_size_limit():

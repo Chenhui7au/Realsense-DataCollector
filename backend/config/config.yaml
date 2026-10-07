@@ -102,7 +102,12 @@ camera:
     fps: 15
     jpeg_quality: 80
   recording:
+    # Lower bound only, global: a shorter take is discarded rather than saved.
+    # There is no per-stage version of this.
     min_duration_s: 1
+    # Fallback only. A stage that writes its own max_duration_s wins over this,
+    # and every shipped stage does, so editing this line alone changes nothing.
+    # It is what a stage without the key would get.
     max_duration_s: 300
     colorize_depth: false
     # Verified against a real D435I, SDK 2.58, firmware 5.17.3.10, by asking the
@@ -126,8 +131,20 @@ storage:
   # When false a finished round is deleted as soon as it completes.
   keep_finished_sessions: true
 
-# Stage count is not hardcoded. The service counts this list at startup and
-# refuses to boot if indices are not unique and contiguous starting at one.
+# Stage count is not hardcoded. ``stages`` is a pool of prepared definitions and
+# ``stages_count`` picks how many of them a round uses: the first N, in order.
+# The service refuses to boot if the pool is empty, if indices are not unique and
+# contiguous starting at one, or if the count is outside 1..10 or larger than the
+# pool. Raising the count is therefore just a one line change, and lowering it
+# keeps the unused definitions (and their titles and descriptions) for later.
+#
+# Defaults to 8. Set it to 10 to run every definition, or to 3 for a quick pass.
+stages_count: 8
+
+# Each stage's own max_duration_s is the one that counts: it is what the
+# countdown and the automatic stop use. camera.recording.max_duration_s above is
+# only the fallback for a stage that omits the key. Leave it out here to take the
+# fallback deliberately.
 stages:
   - index: 1
     name: "Front, level"
@@ -160,4 +177,12 @@ stages:
   - index: 8
     name: "Orbit sweep"
     instructions: "While recording, orbit steadily around the subject through a full turn. Keep the subject centred and hold a constant angular speed. Aim for one complete revolution per take."
+    max_duration_s: 300
+  - index: 9
+    name: "Left profile, 90 degrees"
+    instructions: "Move round to the subject's left side until the camera looks along the shoulder line. Keep the same height and distance."
+    max_duration_s: 300
+  - index: 10
+    name: "Right profile, 90 degrees"
+    instructions: "Move round to the subject's right side for the matching profile. Keep the same height and distance as the left hand pass."
     max_duration_s: 300

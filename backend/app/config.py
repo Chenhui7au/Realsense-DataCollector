@@ -28,6 +28,13 @@ class ConfigError(Exception):
 DEFAULT_STAGE_MAX_DURATION_S = 300.0
 DEFAULT_MIN_DURATION_S = 1.0
 
+# The stage list is a pool of prepared definitions; ``stages_count`` picks how
+# many of them a round actually uses. Bounds are enforced so a typo cannot ask
+# for a round with no stages or with more than the pool holds.
+MIN_STAGES = 1
+MAX_STAGES = 10
+DEFAULT_STAGES_COUNT = 8
+
 # Bytes one pixel occupies, per stream format. Anything not listed is treated as
 # two byte, which is the safe middle: too high overstates disk use, too low
 # understates it, and understating is the one that gets someone into trouble.
@@ -130,8 +137,25 @@ class Config:
         )
 
         self.stages: List[Dict[str, Any]] = [dict(item) for item in (raw.get("stages") or [])]
+        # How many of the definitions above a round uses. Everything downstream
+        # reads total_stages, so only this one place decides the size of a round.
+        raw_count = raw.get("stages_count")
+        self.stages_count: int = self._parse_stages_count(raw_count)
+        if raw_count is None and self.stages:
+            # Omitted means the default, but never more stages than the pool
+            # defines, so trimming the list does not force editing the count as
+            # well. An explicit value that overruns the pool is an error instead,
+            # because that is a typo rather than a deliberate shortening.
+            self.stages_count = min(self.stages_count, len(self.stages))
 
         self._validate_stages()
+
+    def _parse_stages_count(self, raw: Any) -> int:
+        if raw is None:
+            return DEFAULT_STAGES_COUNT
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ConfigError(f"stages_count must be an integer, got {raw!r}")
+        return raw
 
     # ------------------------------------------------------------- helpers
 
@@ -173,6 +197,20 @@ class Config:
     def _validate_stages(self) -> None:
         if not self.stages:
             raise ConfigError("stages must define at least one stage")
+        if len(self.stages) > MAX_STAGES:
+            raise ConfigError(
+                f"stages may hold at most {MAX_STAGES} definitions, got {len(self.stages)}"
+            )
+        if not MIN_STAGES <= self.stages_count <= MAX_STAGES:
+            raise ConfigError(
+                f"stages_count must be between {MIN_STAGES} and {MAX_STAGES}, "
+                f"got {self.stages_count}"
+            )
+        if self.stages_count > len(self.stages):
+            raise ConfigError(
+                f"stages_count is {self.stages_count} but stages only defines "
+                f"{len(self.stages)}; add definitions or lower stages_count"
+            )
 
         indices: List[int] = []
         for position, stage in enumerate(self.stages, start=1):
@@ -219,13 +257,25 @@ class Config:
 
     @property
     def total_stages(self) -> int:
-        return len(self.stages)
+        """How many stages a round has, i.e. how many of the pool are in use."""
+        return self.stages_count
 
     def stage_indices(self) -> List[int]:
-        return [int(stage["index"]) for stage in self.stages]
+        """The stages in use, in order. Always ``1..stages_count``."""
+        return list(range(1, self.stages_count + 1))
 
     def has_stage(self, index: int) -> bool:
         return 1 <= index <= self.total_stages
+
+    def has_definition(self, index: int) -> bool:
+        """True when the pool carries a definition, whether or not it is in use.
+
+        Titles and descriptions are kept for definitions that are merely out of
+        use, so raising ``stages_count`` again brings the written text back. An
+        override for an index with no definition at all is unreachable and is
+        dropped.
+        """
+        return 1 <= index <= len(self.stages)
 
     def stage_config(self, index: int) -> Optional[Dict[str, Any]]:
         """Config view of one stage, used before a session exists."""

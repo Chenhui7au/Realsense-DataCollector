@@ -1727,3 +1727,163 @@ def test_stage_count_is_not_hardcoded(tmp_path):
         # A fourth stage no longer exists, so it must be out of range.
         response = client.post("/api/guides/4", files={"file": ("a.png", png_bytes(), "image/png")})
         assert response.status_code == 404
+
+
+# ----------------------------------------------------------- stages_count
+
+def _with_count(tmp_path, count, definitions=None, stages=None, seed_defaults=False):
+    """Rewrite a generated config to carry an explicit ``stages_count``."""
+    library = tmp_path / "library"
+    library.mkdir(parents=True, exist_ok=True)
+    config_path = write_config(
+        tmp_path,
+        allow_roots=[str(library)],
+        stages=definitions if definitions is not None else (stages or 10),
+        guides_overrides={"seed_defaults": True} if seed_defaults else None,
+    )
+    payload = yaml.safe_load(config_path.read_text())
+    if count is not _ABSENT:
+        payload["stages_count"] = count
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return config_path
+
+
+_ABSENT = object()
+
+
+def test_the_shipped_count_and_pool_are_the_documented_ones():
+    """docs/DESIGN.md section 4 documents a pool of ten and a default count of eight."""
+    shipped = load_config(BACKEND_DIR / "config" / "config.yaml")
+    assert shipped.stages_count == 8
+    assert len(shipped.stages) == 10
+    assert shipped.total_stages == 8
+    assert shipped.stage_indices() == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_stages_count_decides_how_many_a_round_uses(tmp_path):
+    """The pool holds ten definitions; the count picks a prefix of them."""
+    config_path = _with_count(tmp_path, 4, definitions=10)
+    config = load_config(config_path)
+    assert config.total_stages == 4
+    assert config.stage_indices() == [1, 2, 3, 4]
+    assert config.has_stage(4) is True
+    assert config.has_stage(5) is False
+    # The definitions past the count are still in the file, just unused.
+    assert len(config.stages) == 10
+
+
+def test_stages_count_defaults_to_eight(tmp_path):
+    config_path = _with_count(tmp_path, _ABSENT, definitions=10)
+    assert load_config(config_path).total_stages == 8
+
+
+def test_an_omitted_count_falls_back_to_a_shorter_pool(tmp_path):
+    """Trimming the pool must not force editing the count as well."""
+    config_path = _with_count(tmp_path, _ABSENT, definitions=3)
+    assert load_config(config_path).total_stages == 3
+
+
+def test_stages_count_accepts_the_full_range(tmp_path):
+    for count in (1, 10):
+        config_path = _with_count(tmp_path / f"n{count}", count, definitions=10)
+        assert load_config(config_path).total_stages == count
+
+
+@pytest.mark.parametrize("count", [0, -1, 11, 99])
+def test_stages_count_outside_the_range_is_refused(tmp_path, count):
+    config_path = _with_count(tmp_path, count, definitions=10)
+    with pytest.raises(ConfigError, match="stages_count must be between"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize("count", ["eight", 1.5, True])
+def test_a_non_integer_stages_count_is_refused(tmp_path, count):
+    config_path = _with_count(tmp_path, count, definitions=10)
+    with pytest.raises(ConfigError, match="stages_count must be an integer"):
+        load_config(config_path)
+
+
+def test_a_count_larger_than_the_pool_is_refused(tmp_path):
+    """An explicit overrun is a typo, not a deliberate shortening."""
+    config_path = _with_count(tmp_path, 8, definitions=3)
+    with pytest.raises(ConfigError, match="only defines 3"):
+        load_config(config_path)
+
+
+def test_the_pool_may_hold_at_most_ten(tmp_path):
+    config_path = _with_count(tmp_path, _ABSENT, definitions=11)
+    with pytest.raises(ConfigError, match="at most 10"):
+        load_config(config_path)
+
+
+def test_the_count_reaches_the_wire_and_the_guide_progress(tmp_path):
+    config_path = _with_count(tmp_path, 5, definitions=10)
+    with TestClient(create_app(config_path)) as client:
+        body = client.get("/api/config").json()
+        assert body["total_stages"] == 5
+        assert [item["index"] for item in body["stages"]] == [1, 2, 3, 4, 5]
+        guides = client.get("/api/guides").json()
+        assert guides["total"] == 5
+        assert guides["missing_indices"] == [1, 2, 3, 4, 5]
+
+
+def test_a_session_freezes_the_active_prefix(tmp_path):
+    """A round carries exactly the stages in use, not the whole pool."""
+    config_path = _with_count(tmp_path, 3, definitions=10, seed_defaults=True)
+    project_root = tmp_path / "library" / "round_a"
+    project_root.mkdir(parents=True, exist_ok=True)
+    with session_capable_client(config_path, project_root) as client:
+        session = client.post("/api/sessions", json={"name": "round_a"}).json()
+        assert [s["index"] for s in session["stages"]] == [1, 2, 3]
+        assert session["current_stage"] == 1
+        # The fourth stage of the pool must not be reachable.
+        assert client.post("/api/sessions/round_a/stages/4/record/start", json={}).status_code == 404
+
+
+def test_hidden_stages_reject_edits_but_in_use_ones_keep_theirs(tmp_path):
+    """A stage outside the count is not addressable at all, so its text cannot be
+    written while it is hidden. The visible stages are unaffected."""
+    config_path = _with_count(tmp_path, 3, definitions=10)
+    with TestClient(create_app(config_path)) as client:
+        assert client.put("/api/guides/4", json={"name": "Hidden"}).status_code == 404
+        client.put("/api/guides/2", json={"name": "Visible"})
+        assert client.get("/api/guides").json()["guides"][1]["name"] == "Visible"
+
+
+def test_raising_the_count_again_brings_hidden_text_back(tmp_path):
+    """Lowering the count hides stages, it must not throw their text away.
+
+    The pool keeps the definition and the operator may have written a title for
+    it, so the override has to survive a restart at a lower count and come back
+    when the stage does.
+    """
+    config_path = _with_count(tmp_path, 10, definitions=10, seed_defaults=True)
+    with TestClient(create_app(config_path)) as client:
+        assert client.put("/api/guides/9", json={"name": "Ninth"}).status_code == 200
+
+    lowered = _with_count(tmp_path, 3, definitions=10)
+    with TestClient(create_app(lowered)) as client:
+        assert client.put("/api/guides/9", json={"name": "Ninth"}).status_code == 404
+        # Any write rewrites the whole manifest, which is where a dropped
+        # override would be lost for good.
+        assert client.put("/api/guides/2", json={"name": "Visible"}).status_code == 200
+
+    raised = _with_count(tmp_path, 10, definitions=10)
+    with TestClient(create_app(raised)) as client:
+        ninth = client.get("/api/guides").json()["guides"][8]
+        assert ninth["name"] == "Ninth"
+        assert ninth["name_custom"] is True
+
+
+def test_an_override_beyond_the_pool_is_still_discarded(tmp_path):
+    """An index with no definition anywhere is unreachable, so it is cleaned up."""
+    config_path = _with_count(tmp_path, 3, definitions=10, seed_defaults=True)
+    with TestClient(create_app(config_path)) as client:
+        manifest = json.loads((tmp_path / "var" / "guides" / "manifest.json").read_text(encoding="utf-8"))
+        manifest["names"]["12"] = "Ghost"
+        (tmp_path / "var" / "guides" / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        assert client.put("/api/guides/2", json={"name": "Visible"}).status_code == 200
+        written = json.loads((tmp_path / "var" / "guides" / "manifest.json").read_text(encoding="utf-8"))
+        assert "12" not in written["names"]

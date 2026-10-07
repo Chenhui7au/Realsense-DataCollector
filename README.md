@@ -1,6 +1,6 @@
 ﻿# RealSense Data-Collector
 
-浏览器端的数据采集工具，通过 Intel RealSense D435i 分八个阶段录制原始数据，每轮采集落盘为一组 RealSense bag 文件。
+浏览器端的数据采集工具，通过 Intel RealSense D435i 分阶段录制原始数据，每轮采集落盘为一组 RealSense bag 文件。阶段数可配置，默认八个。
 
 ---
 
@@ -37,6 +37,16 @@ Realsense/
 python -m pip install -r backend\requirements.txt   # conda base 里通常已有
 npm --prefix frontend install
 ```
+
+### 基础配置
+
+采集参数都在 [backend/config/config.yaml](backend/config/config.yaml) 里，改完重启服务生效。常改的几项：
+
+| 配置项 | 含义 | 默认值 |
+| --- | --- | --- |
+| `stages_count` | 一轮的阶段数 | `8`，可填 1 到 10 |
+| `camera.recording.min_duration_s` | 低于该时长的录制会被丢弃，秒 | `1` |
+| `stages[].max_duration_s` | 单个阶段的最长录制时长，秒 | `300` |
 
 ### 启动后端
 

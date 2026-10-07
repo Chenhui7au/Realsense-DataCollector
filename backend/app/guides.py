@@ -262,7 +262,7 @@ class GuideStore:
                 index = int(stored_key)
             except (TypeError, ValueError):
                 continue
-            if not self.config.has_stage(index) or not isinstance(value, str):
+            if not self.config.has_definition(index) or not isinstance(value, str):
                 continue
             text = value.strip()
             if text:
