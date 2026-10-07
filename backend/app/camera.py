@@ -64,7 +64,14 @@ MOTION_RATES: Dict[str, Tuple[int, ...]] = {
     "gyro": (200, 400),
 }
 
-_FORMAT_NAMES: Tuple[str, ...] = ("z16", "bgr8", "y8", "motion_xyz32f")
+_FORMAT_NAMES: Tuple[str, ...] = ("z16", "bgr8", "rgb8", "y8", "motion_xyz32f")
+
+# Colour byte order used when the service picks one itself, as the preview does.
+# rgb8 rather than the SDK's native bgr8 because a recorded bag is read back by
+# tools that assume RGB, and a viewer that makes that assumption on a bgr8 stream
+# shows red and blue swapped, i.e. a blue tinted picture. Overridable per stream
+# in the YAML; encode_jpeg handles either order.
+COLOR_FORMAT = "rgb8"
 
 
 def require_db3(path: str) -> None:
@@ -215,6 +222,7 @@ class RealSenseBackend:
         table = {
             "z16": rs.format.z16,
             "bgr8": rs.format.bgr8,
+            "rgb8": rs.format.rgb8,
             "y8": rs.format.y8,
             "motion_xyz32f": rs.format.motion_xyz32f,
         }
@@ -385,9 +393,15 @@ def encode_jpeg(frame: Frame, quality: int) -> Optional[bytes]:
     """Encode one frame as JPEG. ``None`` for motion frames or unknown layouts."""
     try:
         if frame.format == "bgr8":
+            # librealsense orders the bytes B, G, R. Pillow wants R, G, B, so the
+            # raw decoder is told how to read them.
             image = Image.frombytes(
                 "RGB", (frame.width, frame.height), frame.data, "raw", "BGR"
             )
+        elif frame.format == "rgb8":
+            # Already in Pillow's order, so no swizzle. Getting this branch wrong
+            # trades red and blue and the picture reads as cold and blue tinted.
+            image = Image.frombytes("RGB", (frame.width, frame.height), frame.data)
         elif frame.format == "y8":
             image = Image.frombytes("L", (frame.width, frame.height), frame.data)
         elif frame.format == "z16":
@@ -553,7 +567,9 @@ class CameraWorker:
                     "color": {
                         "width": self.config.preview_width,
                         "height": self.config.preview_height,
-                        "format": "bgr8",
+                        # Same order the recording uses, so a preview frame and a
+                        # recorded frame encode through one identical path.
+                        "format": COLOR_FORMAT,
                         "fps": self.config.preview_fps,
                     }
                 },

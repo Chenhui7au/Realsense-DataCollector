@@ -1,7 +1,9 @@
 ﻿# RealSense Data-Collector 设计文档
 
-版本 v0.17
+版本 v0.18
 日期 2026-10-07
+
+v0.18 变更点。彩色流的录制格式由 `bgr8` 改为 `rgb8`。原因是查看工具按 RGB 解释 `bgr8` 的字节时会把红蓝对调，画面偏蓝发冷，实测同一场景两种顺序的字节恰好互换。`_format_enum` 与 `encode_jpeg` 现在两种顺序都支持，预览也统一到 `COLOR_FORMAT`，因此服务内部只有一条彩色的编码路径；6.3 改名并补上字节序的说明与两种顺序的编码片段。两路红外保留不动。新增五个测试，其中一个用故意写反的通道片验证过确实会失败。
 
 v0.17 变更点。出厂配置的单阶段最长录制时长由 30 秒提高到 5 分钟，八个阶段的示例数值与配置说明一并更新，`camera.recording.max_duration_s` 这一全局默认值保持 300 秒不变（它本来就是 5 分钟，此前只是没有阶段用到它）。`project.min_free_space_gb` 由 5 提高到 150。理由是这个门槛现在是一条常驻磁盘保留量：按配置的录制速率推算单条 5 分钟约 21 GB，原先 5 GB 意味着只剩 6 GB 也会放行，然后录到一半把磁盘写满而失败。150 相当于始终留出约七条的余量，代价是可用空间低于 150 GB 时主页会判项目目录不可用并拒绝新建会话。
 
@@ -339,7 +341,7 @@ camera:
     # 该组合已实测可录制并回放。修改本段即可，代码无需改动。
     streams:
       depth:      { width: 848, height: 480, format: z16, fps: 30 }
-      color:      { width: 640, height: 480, format: bgr8, fps: 30 }
+      color:      { width: 640, height: 480, format: rgb8, fps: 30 }
       infrared_1: { width: 848, height: 480, format: y8,  fps: 30 }
       infrared_2: { width: 848, height: 480, format: y8,  fps: 30 }
       accel:      { format: motion_xyz32f, fps: 100 }
@@ -489,12 +491,19 @@ sequenceDiagram
 
 一次切换耗时约零点五到一点五秒，期间预览黑屏。前端在这段时间盖一层遮罩并显示正在准备相机，让等待变得可预期。
 
-### 6.3 预览编码
+### 6.3 彩色字节序与预览编码
 
-采集线程从帧组里取出彩色帧，交给 Pillow 编码成 JPEG，质量取配置值，然后写入最新帧槽位，同时递增帧序号并通知等待者。
+彩色流的字节顺序是配置项 `camera.recording.streams.color.format`，出厂值定为 **`rgb8`** 而不是 SDK 原生的 `bgr8`。理由是录制文件里的字节顺序会被查看工具按自己的假设解释：按 RGB 解 `bgr8` 的数据会把红蓝对调，画面看起来偏蓝发冷。已被这个现象踩过一次，因此把持久化数据的顺序定为查看工具普遍假设的那一种。`bgr8` 仍然受支持，改 YAML 即可切回，两种顺序的编码都经过测试。
+
+采集线程从帧组里取出彩色帧，交给 Pillow 编码成 JPEG，质量取配置值，然后写入最新帧槽位，同时递增帧序号并通知等待者。编码按帧自报的格式分派，两种顺序走同一段代码：
 
 ```python
-image = Image.frombytes("RGB", (frame.width, frame.height), payload, "raw", "BGR")
+if frame.format == "bgr8":
+    # librealsense 存的是 B、G、R，Pillow 要 R、G、B，所以要显式告诉它怎么读。
+    image = Image.frombytes("RGB", (w, h), payload, "raw", "BGR")
+elif frame.format == "rgb8":
+    # 本来就是 Pillow 的顺序，不做通道搬移。写错这一支就会红蓝互换。
+    image = Image.frombytes("RGB", (w, h), payload)
 buf = io.BytesIO()
 image.save(buf, format="JPEG", quality=quality)
 with self._frame_cond:

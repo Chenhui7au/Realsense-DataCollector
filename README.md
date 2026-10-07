@@ -20,49 +20,10 @@
 
 ```text
 Realsense/
-  README.md              本文件
-  .gitignore
-  docs/
-    DESIGN.md            需求、架构、配置、数据落盘、相机设计、风险、里程碑
-    FRONTEND.md          页面逻辑、交互规则、状态管理、样式约定、运行方式
-    API.md               接口契约、数据模型、错误码、持久化、后端实现约定
-  backend/
-    run.py               开发入口，起服务与传配置
-    requirements.txt     依赖清单与版本说明
-    config/config.yaml   部署配置，阶段表与相机参数都在这里
-    app/
-      main.py            应用装配、启动顺序、异常处理器、托管前端产物
-      config.py          YAML 解析与启动校验
-      errors.py          统一错误体与三个全局处理器
-      models.py          响应模型，与 API.md 第三节一一对应
-      paths.py           路径规范化与名称规则
-      settings.py        settings.json 的原子读写
-      project.py         项目目录的校验与探测
-      fsbrowser.py       目录浏览与新建目录
-      guides.py          示意图清单、启动自检、展示副本
-      device.py          相机探测，未接相机时给出原因
-      camera.py          采集线程、pipeline 计划、JPEG 编码
-      sessions.py        会话目录布局、清单读写、中断恢复
-      capture.py         会话状态机，把相机与磁盘串起来
-      diagrams.py        默认示意图的绘制，几何与渲染分开以便断言
-      services.py        容器与启动自检顺序
-      routers/           一组接口一个模块
-    tests/               测试，不需要相机，也不需要真实服务目录
-    tools/               相机探测、占用排查与设备枚举脚本
-    var/                 运行时数据，不进版本库
-  frontend/
-    src/
-      api/               数据模型与 HTTP 客户端
-      components/        通用组件
-      composables/       状态层
-      router/            路由与守卫
-      styles/            设计令牌与基础样式
-      utils/             格式化与校验
-      views/             五个页面
-    dist/                构建产物，不进版本库
+  docs/       # 项目设计文档
+  backend/    # 后端服务
+  frontend/   # 前端页面
 ```
-
-服务自己的运行数据落在 `backend/var/`，也就是示意图、日志与设置文件，两者不要混。采集数据落在主页配置的项目目录下，形如 `<项目目录>/<会话名称>/`，整个项目目录拷走就是一份干净的数据集。
 
 ---
 

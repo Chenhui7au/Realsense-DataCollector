@@ -115,7 +115,7 @@ camera:
     # no code change.
     streams:
       depth:      { width: 848, height: 480, format: z16, fps: 30 }
-      color:      { width: 640, height: 480, format: bgr8, fps: 30 }
+      color:      { width: 640, height: 480, format: rgb8, fps: 30 }
       infrared_1: { width: 848, height: 480, format: y8,  fps: 30 }
       infrared_2: { width: 848, height: 480, format: y8,  fps: 30 }
       accel:      { format: motion_xyz32f, fps: 100 }

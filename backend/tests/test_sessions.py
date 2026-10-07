@@ -478,6 +478,77 @@ def test_the_thumbnail_is_a_jpeg(harness):
         assert image.size == (COLOR_W, COLOR_H)
 
 
+# ------------------------------------------------------- colour byte order
+
+def test_rgb8_and_bgr8_encode_to_the_same_picture():
+    """The two orders are the same image stored either way round.
+
+    Feeding the encoder the bytes in the wrong order is what makes a take look
+    blue: red and blue trade places. Here the two frames carry identical colour
+    information, one as R,G,B and one as B,G,R, so the encoded JPEGs must match
+    byte for byte.
+    """
+    from app.camera import encode_jpeg
+
+    w, h = 4, 3
+    as_rgb = Frame("color", "rgb8", w, h, bytes([210, 90, 40]) * (w * h))
+    as_bgr = Frame("color", "bgr8", w, h, bytes([40, 90, 210]) * (w * h))
+
+    rgb_jpeg = encode_jpeg(as_rgb, 95)
+    bgr_jpeg = encode_jpeg(as_bgr, 95)
+    assert rgb_jpeg is not None and bgr_jpeg is not None
+    assert rgb_jpeg == bgr_jpeg
+
+
+def test_rgb8_keeps_red_and_blue_in_place():
+    """A discriminating check: reading rgb8 as if it were bgr8 fails this."""
+    from app.camera import encode_jpeg
+
+    w, h = 4, 3
+    frame = Frame("color", "rgb8", w, h, bytes([220, 90, 30]) * (w * h))
+    payload = encode_jpeg(frame, 95)
+    assert payload is not None
+
+    with Image.open(io.BytesIO(payload)).convert("RGB") as image:
+        red, green, blue = image.getpixel((0, 0))
+    assert red > green > blue, "the warm channel must survive as red"
+
+
+def test_rgb8_is_an_accepted_pixel_format():
+    """The shipped colour format has to clear validate_plan, or a take cannot start."""
+    from app.camera import PipelinePlan
+
+    config = load_config(BACKEND_DIR / "config" / "config.yaml")
+    worker = CameraWorker(config, backend_factory=FakeBackend)
+    worker.validate_plan(
+        PipelinePlan(
+            mode="record",
+            streams={"color": {"width": 640, "height": 480, "format": "rgb8", "fps": 30}},
+            record_path="x.db3",
+        )
+    )
+
+
+def test_the_shipped_colour_format_is_rgb8():
+    """deviation guard: the SDK's native order is bgr8, and a bag read back by a
+    tool that assumes RGB then shows red and blue swapped. The shipped config asks
+    for rgb8 so a recorded take reads correctly in realsense-viewer."""
+    config = load_config(BACKEND_DIR / "config" / "config.yaml")
+    assert str(config.recording_streams["color"]["format"]).lower() == "rgb8"
+
+
+def test_the_preview_uses_the_same_colour_order_as_recording(harness):
+    """One colour path, so a preview frame and a recorded frame cannot diverge."""
+    from app.camera import COLOR_FORMAT
+
+    FakeBackend.opened = []
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/preview/start")
+
+    assert FakeBackend.opened[-1].streams["color"]["format"] == COLOR_FORMAT
+
+
 def test_recording_must_be_attached_at_pipeline_start(harness):
     """The recorder cannot be added to a running pipeline, so a take restarts it."""
     harness.set_project()
