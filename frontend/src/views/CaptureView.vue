@@ -477,10 +477,16 @@ async function leaveForHome() {
   background: #0d1517;
 }
 
+/*
+ * The poster frame normally comes from the colour stream, which is 4:3 like this
+ * box, so cover and contain agree. contain is used anyway so a plan without a
+ * colour stream, whose frame falls back to depth, is not cropped.
+ */
 .thumb img {
   width: 100%;
   aspect-ratio: 4 / 3;
-  object-fit: cover;
+  object-fit: contain;
+  background: #0d1517;
 }
 
 .thumb figcaption {

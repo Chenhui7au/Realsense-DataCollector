@@ -141,7 +141,10 @@ export interface AppConfig {
 
 export interface GuideEntry {
   index: number
+  /** Operator title when set, otherwise the stage name from the YAML. */
   name: string
+  /** True when the title above came from the guides screen rather than the YAML. */
+  name_custom: boolean
   configured: boolean
   image_url: string | null
   original_filename: string | null
@@ -193,6 +196,16 @@ export interface GuideDeleteResult {
   configured: boolean
   ready: boolean
   uploaded: number
+}
+
+/**
+ * Body of `PUT /api/guides/{index}`. Both fields are optional and independent:
+ * only the ones present are applied, so editing one never rewrites the other. An
+ * empty string clears that override, which is the reset action.
+ */
+export interface GuideUpdateBody {
+  name?: string
+  instructions?: string
 }
 
 export interface StartRecordResult {
@@ -318,8 +331,8 @@ export interface CaptureApi {
   guides(): Promise<GuidesResponse>
   uploadGuide(index: number, file: File): Promise<GuideUploadResult>
   uploadGuidesBatch(files: Map<number, File>): Promise<GuideBatchResult>
-  /** Writes the description that goes with a stage. An empty value resets it. */
-  saveGuideInstructions(index: number, instructions: string): Promise<GuideUpdateResult>
+  /** Writes a stage's title and description. An empty value resets that field. */
+  updateGuide(index: number, body: GuideUpdateBody): Promise<GuideUpdateResult>
   deleteGuide(index: number): Promise<GuideDeleteResult>
   guideImageUrl(index: number, sha256: string | null, size?: 'display' | 'original'): string
 

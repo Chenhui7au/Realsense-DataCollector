@@ -11,16 +11,27 @@ const props = defineProps<{
   error?: string | null
   highlight?: boolean
   maxLength: number
+  nameMaxLength: number
+  /** Incremented by the store after a successful write, to resync the drafts. */
+  syncToken: number
 }>()
 
-const emit = defineEmits<{ pick: [File]; remove: []; describe: [string] }>()
+const emit = defineEmits<{
+  pick: [File]
+  remove: []
+  /** Partial: only the fields the operator actually changed. */
+  save: [fields: { name?: string; instructions?: string }]
+  /** Clears both overrides so the card falls back to the config. */
+  reset: []
+}>()
 
 const input = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 const draft = ref(props.entry.instructions)
+const nameDraft = ref(props.entry.name)
 
 /*
- * The server is the source of truth for the stored text, so the draft follows
+ * The server is the source of truth for the stored text, so the drafts follow
  * every refresh. That also means a rejected save is reflected rather than left
  * showing wording that was never accepted.
  */
@@ -31,12 +42,64 @@ watch(
   },
 )
 
+watch(
+  () => props.entry.name,
+  (value) => {
+    nameDraft.value = value
+  },
+)
+
+/*
+ * After a write the server state is authoritative for both fields, so resync
+ * rather than trusting what the card set locally. This is what makes Reset
+ * work: it clears both overrides, and a field that had no override comes back
+ * with the same value it already had, which the watches above cannot see.
+ */
+watch(
+  () => props.syncToken,
+  () => {
+    draft.value = props.entry.instructions
+    nameDraft.value = props.entry.name
+  },
+)
+
 const configured = computed(() => props.entry.configured)
 const customised = computed(() => props.entry.instructions_custom)
+const nameCustomised = computed(() => props.entry.name_custom)
 const trimmed = computed(() => draft.value.trim())
 const dirty = computed(() => trimmed.value !== props.entry.instructions)
-const empty = computed(() => trimmed.value.length === 0)
 const overLong = computed(() => trimmed.value.length > props.maxLength)
+
+/**
+ * Folded the same way the service folds it, so a pasted multi line heading does
+ * not read as dirty before it has even been saved.
+ */
+const nameTrimmed = computed(() => nameDraft.value.split(/\s+/).filter(Boolean).join(' '))
+const nameDirty = computed(() => nameTrimmed.value !== props.entry.name)
+const nameOverLong = computed(() => nameTrimmed.value.length > props.nameMaxLength)
+
+/*
+ * The title and the description are one edit scope: one Save, one Undo, one
+ * Reset for the card. Only the fields that actually changed are sent, so saving
+ * a description never stores a title override equal to the config value.
+ */
+const anyDirty = computed(() => dirty.value || nameDirty.value)
+const anyOverLong = computed(() => overLong.value || nameOverLong.value)
+const hasOverride = computed(() => customised.value || nameCustomised.value)
+
+const overLongMessage = computed(() => {
+  const limits: string[] = []
+  if (nameOverLong.value) {
+    limits.push(`title to ${props.nameMaxLength}`)
+  }
+  if (overLong.value) {
+    limits.push(`description to ${props.maxLength}`)
+  }
+  if (limits.length === 1) {
+    return `Keep the ${limits[0]} characters or fewer.`
+  }
+  return `Keep the ${limits.join(' and the ')} characters or fewer.`
+})
 
 function openPicker() {
   if (!props.busy) {
@@ -63,20 +126,28 @@ function onDrop(event: DragEvent) {
 }
 
 function save() {
-  if (dirty.value && !overLong.value) {
-    emit('describe', trimmed.value)
+  if (!anyDirty.value || anyOverLong.value) {
+    return
   }
+  const fields: { name?: string; instructions?: string } = {}
+  if (nameDirty.value) {
+    fields.name = nameTrimmed.value
+  }
+  if (dirty.value) {
+    fields.instructions = trimmed.value
+  }
+  emit('save', fields)
 }
 
-/** Clears the override so the stage falls back to the wording in the config. */
+/** Clears both overrides so the stage falls back to the wording in the config. */
 function reset() {
-  draft.value = ''
-  emit('describe', '')
+  emit('reset')
 }
 
-/** Reverts an unsaved edit without touching what is stored. */
+/** Reverts the unsaved edits without touching what is stored. */
 function undo() {
   draft.value = props.entry.instructions
+  nameDraft.value = props.entry.name
 }
 </script>
 
@@ -104,7 +175,23 @@ function undo() {
       </span>
     </header>
 
-    <h3 class="gcard__name">{{ entry.name }}</h3>
+    <div class="gcard__title">
+      <input
+        :id="`guide-name-${entry.index}`"
+        v-model="nameDraft"
+        class="gcard__title-input"
+        type="text"
+        :disabled="busy"
+        :maxlength="nameMaxLength"
+        :title="entry.name"
+        :aria-label="`Title for stage ${entry.index}`"
+        :placeholder="`Stage ${entry.index}`"
+        @keydown.enter.prevent="save"
+      />
+      <span class="gcard__count" :class="{ 'gcard__count--over': nameOverLong }">
+        {{ nameTrimmed.length }} / {{ nameMaxLength }}
+      </span>
+    </div>
 
     <button
       type="button"
@@ -158,8 +245,9 @@ function undo() {
     <div class="gcard__desc">
       <div class="gcard__desc-head">
         <label :for="`guide-desc-${entry.index}`">Description</label>
-        <span v-if="customised" class="gcard__tag">Custom</span>
-        <span v-else class="gcard__tag gcard__tag--default">From config</span>
+        <span class="gcard__count" :class="{ 'gcard__count--over': overLong }">
+          {{ trimmed.length }} / {{ maxLength }}
+        </span>
       </div>
       <textarea
         :id="`guide-desc-${entry.index}`"
@@ -171,36 +259,35 @@ function undo() {
         placeholder="What the collector should do for this stage."
         @keydown.ctrl.enter.prevent="save"
       />
-      <div class="gcard__desc-foot">
-        <span class="gcard__count" :class="{ 'gcard__count--over': overLong }">
-          {{ trimmed.length }} / {{ maxLength }}
-        </span>
-        <span class="gcard__desc-actions">
-          <AppButton v-if="dirty" size="sm" variant="ghost" :disabled="busy" @click="undo">
-            Undo
-          </AppButton>
-          <AppButton
-            v-if="customised"
-            size="sm"
-            variant="ghost"
-            :disabled="busy || dirty || empty"
-            @click="reset"
-          >
-            Reset
-          </AppButton>
-          <AppButton
-            size="sm"
-            variant="secondary"
-            :disabled="busy || !dirty || overLong"
-            @click="save"
-          >
-            Save
-          </AppButton>
-        </span>
-      </div>
-      <p v-if="overLong" class="gcard__error">
-        Keep the description to {{ maxLength }} characters or fewer.
-      </p>
+    </div>
+
+    <p v-if="anyOverLong" class="gcard__error">{{ overLongMessage }}</p>
+
+    <div class="gcard__actions">
+      <span v-if="hasOverride" class="gcard__tag">Custom</span>
+      <span v-else class="gcard__tag gcard__tag--default">From config</span>
+      <span class="gcard__buttons">
+        <AppButton v-if="anyDirty" size="sm" variant="ghost" :disabled="busy" @click="undo">
+          Undo
+        </AppButton>
+        <AppButton
+          size="sm"
+          variant="ghost"
+          :disabled="busy || anyDirty || !hasOverride"
+          title="Clear the title and the description, back to the wording in the config file"
+          @click="reset"
+        >
+          Reset
+        </AppButton>
+        <AppButton
+          size="sm"
+          variant="secondary"
+          :disabled="busy || !anyDirty || anyOverLong"
+          @click="save"
+        >
+          Save
+        </AppButton>
+      </span>
     </div>
 
     <footer class="gcard__foot">
@@ -283,12 +370,67 @@ function undo() {
   color: var(--saved-fg);
 }
 
-.gcard__name {
+/*
+ * The title is edited in place, so the input reads as the heading until it is
+ * hovered or focused. It keeps the heading's rhythm rather than looking like a
+ * form field, which would make eight cards read as a form.
+ */
+.gcard__title {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+
+.gcard__title-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--ink-900);
+  font-family: inherit;
   font-size: var(--t-base);
   font-weight: 600;
-  margin-top: var(--s2);
   line-height: 1.3;
-  min-height: 2.6em;
+  /* A title is one line by contract, so a long one ellipsises rather than
+   * pushing the card wider. Focusing the field scrolls to the rest. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gcard__title-input:not(:disabled):hover {
+  border-color: var(--line);
+}
+
+.gcard__title-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 2px var(--accent-wash);
+}
+
+/*
+ * One action row per card, below both text fields, because the title and the
+ * description are a single edit scope: one Save, one Undo, one Reset. The rule
+ * above it separates the editing group from the diagram actions underneath.
+ */
+.gcard__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--line);
+  margin-bottom: var(--s4);
+}
+
+.gcard__buttons {
+  display: flex;
+  gap: var(--s1);
 }
 
 .gcard__stage {
@@ -314,10 +456,23 @@ function undo() {
   border-color: var(--accent);
 }
 
+/*
+ * contain, not cover: a stage diagram is supplied by the operator at whatever
+ * aspect their source has, and cropping it hides the pose cue that is the whole
+ * point of the image. The sunken background reads as a mat around the letterbox.
+ *
+ * Absolute rather than a 100% height. The button is a grid container, so its row
+ * is auto sized and a percentage height on the image resolves against that
+ * content height instead of the 4:3 box: a taller image then overflows and gets
+ * cut off by overflow: hidden. Pinning to the padding box makes the image fit
+ * the box exactly, which is what object-fit then letterboxes inside.
+ */
 .gcard__stage img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .gcard__prompt {
@@ -399,7 +554,7 @@ function undo() {
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-  margin-bottom: var(--s4);
+  margin-bottom: var(--s3);
 }
 
 .gcard__desc-head {
@@ -444,18 +599,6 @@ function undo() {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-wash);
-}
-
-.gcard__desc-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s2);
-}
-
-.gcard__desc-actions {
-  display: flex;
-  gap: var(--s1);
 }
 
 .gcard__count {

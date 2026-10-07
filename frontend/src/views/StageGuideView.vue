@@ -270,6 +270,14 @@ async function goHome() {
   font-size: var(--t-md);
   line-height: 1.6;
   color: var(--ink-700);
+  /*
+   * pre-line, not pre-wrap: the operator writes this as prose, so a blank line
+   * should separate paragraphs and runs of spaces should still collapse the way
+   * text normally does. Only the description behaves this way; the title is
+   * folded onto one line by the service, because it is rendered inline on the
+   * rail and the result cards.
+   */
+  white-space: pre-line;
 }
 
 .brief__spec {

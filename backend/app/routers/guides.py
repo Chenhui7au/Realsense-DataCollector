@@ -123,14 +123,19 @@ def update_guide(
     body: GuideUpdateBody,
     services: Services = Depends(get_services),
 ) -> GuideUpdateResult:
-    """Set or clear the description that goes with a stage's diagram.
+    """Set or clear the title and description that go with a stage's diagram.
 
-    JSON, not multipart, because this carries no bytes. Sending an empty string
-    clears the override so the stage falls back to the YAML instructions, which
-    is also the reset action. The diagram itself is untouched, and the endpoint
-    works for a stage whose diagram is not uploaded yet.
+    JSON, not multipart, because this carries no bytes. Both fields are optional
+    and independent: only the ones present in the body are applied, so editing
+    one never rewrites the other. Sending an empty string clears that override so
+    the stage falls back to the YAML, which is also the reset action. The diagram
+    itself is untouched, and the endpoint works for a stage whose diagram is not
+    uploaded yet.
     """
-    result = services.guides.set_instructions(index, body.instructions)
+    # Presence, not truthiness: an explicit null or "" means "clear", a missing
+    # key means "leave alone".
+    changes = {field: getattr(body, field) for field in body.model_fields_set & {"name", "instructions"}}
+    result = services.guides.set_texts(index, changes)
     readiness = services.guides.readiness()
     result["ready"] = readiness["ready"]
     result["uploaded"] = readiness["uploaded"]

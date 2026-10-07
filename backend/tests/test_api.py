@@ -335,6 +335,7 @@ def test_guide_entry_matches_the_documented_field_set(client):
     expected = {
         "index",
         "name",
+        "name_custom",
         "configured",
         "image_url",
         "original_filename",
@@ -956,7 +957,7 @@ def test_missing_image_is_a_404(client):
     assert response.json()["error"]["code"] == "GUIDE_NOT_FOUND"
 
 
-# ------------------------------------------------------- guide descriptions
+# ------------------------------------------------- guide titles and descriptions
 
 def test_description_defaults_to_the_yaml_instructions(client):
     entry = client.get("/api/guides").json()["guides"][0]
@@ -1046,6 +1047,199 @@ def test_manifest_stores_descriptions_outside_the_stage_entries(client, env):
     manifest = json.loads((env["base"] / "var" / "guides" / "manifest.json").read_text())
     assert manifest["instructions"] == {"1": "Written by the operator."}
     assert "instructions" not in manifest["stages"]["1"]
+
+
+# -------------------------------------------------------------- guide titles
+
+def test_title_defaults_to_the_yaml_stage_name(client):
+    entry = client.get("/api/guides").json()["guides"][0]
+    assert entry["name"] == "Stage 1"
+    assert entry["name_custom"] is False
+
+
+def test_title_can_be_written_without_a_diagram(client):
+    """The title and the image are independent, either may come first."""
+    response = client.put("/api/guides/3", json={"name": "Shared build"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configured"] is False
+    assert body["name"] == "Shared build"
+    assert body["name_custom"] is True
+
+
+def test_title_overrides_the_config_endpoint(client):
+    client.put("/api/guides/2", json={"name": "Front left, wide"})
+    stages = client.get("/api/config").json()["stages"]
+    assert stages[1]["name"] == "Front left, wide"
+    assert stages[0]["name"] == "Stage 1"
+
+
+def test_title_survives_a_restart(env):
+    with TestClient(create_app(env["config"])) as first:
+        first.put("/api/guides/1", json={"name": "Written before the restart."})
+
+    with TestClient(create_app(env["config"])) as second:
+        assert second.get("/api/guides").json()["guides"][0]["name"] == (
+            "Written before the restart."
+        )
+        assert second.get("/api/config").json()["stages"][0]["name"] == (
+            "Written before the restart."
+        )
+
+
+def test_an_empty_title_clears_the_override(client):
+    client.put("/api/guides/1", json={"name": "Temporary title."})
+    response = client.put("/api/guides/1", json={"name": "   "})
+    assert response.status_code == 200
+    assert response.json()["name"] == "Stage 1"
+    assert response.json()["name_custom"] is False
+
+
+@pytest.mark.parametrize(
+    "written,expected",
+    [
+        ("  Padded.  ", "Padded."),
+        ("Two\nlines", "Two lines"),
+        ("Excel\u000bcell", "Excel cell"),
+        ("Tabs\tand   runs", "Tabs and runs"),
+    ],
+)
+def test_a_written_title_is_folded_onto_one_line(client, written, expected):
+    """A title is rendered inline, so a pasted multi line heading is flattened."""
+    response = client.put("/api/guides/1", json={"name": written})
+    assert response.json()["name"] == expected
+
+
+def test_a_hand_edited_name_is_folded_on_load(env):
+    """The fold also applies to a manifest edited by hand, not just the API."""
+    guides_dir = env["base"] / "var" / "guides"
+    guides_dir.mkdir(parents=True, exist_ok=True)
+    (guides_dir / "manifest.json").write_text(
+        json.dumps({"version": 1, "stages": {}, "names": {"1": "  Two\nlines  "}}),
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(env["config"])) as client:
+        entry = client.get("/api/guides").json()["guides"][0]
+        assert entry["name"] == "Two lines"
+        assert entry["name_custom"] is True
+
+    response = client.put("/api/guides/1", json={"name": "x" * 61})
+    assert response.status_code == 400
+    body = response.json()["error"]
+    assert body["code"] == "GUIDE_TEXT_TOO_LONG"
+    assert body["detail"]["field"] == "name"
+
+
+def test_an_over_long_description_names_the_field(client):
+    response = client.put("/api/guides/1", json={"instructions": "x" * 501})
+    assert response.status_code == 400
+    assert response.json()["error"]["detail"]["field"] == "instructions"
+
+
+def test_title_index_must_be_a_stage(client):
+    response = client.put("/api/guides/99", json={"name": "Nowhere."})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "STAGE_NOT_FOUND"
+
+
+def test_updating_a_title_leaves_the_description_alone(client):
+    """The two fields are edited separately, so one must not discard the other."""
+    client.put("/api/guides/1", json={"instructions": "Keep me."})
+    client.put("/api/guides/1", json={"name": "Renamed"})
+
+    entry = client.get("/api/guides").json()["guides"][0]
+    assert entry["name"] == "Renamed"
+    assert entry["instructions"] == "Keep me."
+
+    client.put("/api/guides/1", json={"instructions": "Changed again."})
+    entry = client.get("/api/guides").json()["guides"][0]
+    assert entry["name"] == "Renamed"
+    assert entry["instructions"] == "Changed again."
+
+
+def test_both_fields_can_be_set_in_one_call(client):
+    response = client.put(
+        "/api/guides/2", json={"name": "Renamed", "instructions": "And rewritten."}
+    )
+    body = response.json()
+    assert body["name"] == "Renamed"
+    assert body["instructions"] == "And rewritten."
+
+
+def test_an_absent_field_leaves_the_stored_value_alone(client):
+    """Presence decides what is applied, so an empty body is a no-op."""
+    client.put("/api/guides/1", json={"name": "Renamed", "instructions": "And rewritten."})
+
+    response = client.put("/api/guides/1", json={})
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Renamed"
+    assert response.json()["instructions"] == "And rewritten."
+
+
+def test_an_over_long_title_does_not_apply_the_description(client):
+    """Both values are validated before either is written."""
+    client.put("/api/guides/1", json={"instructions": "Original."})
+    response = client.put(
+        "/api/guides/1", json={"name": "x" * 61, "instructions": "Should not land."}
+    )
+    assert response.status_code == 400
+    entry = client.get("/api/guides").json()["guides"][0]
+    assert entry["name"] == "Stage 1"
+    assert entry["instructions"] == "Original."
+
+
+def test_removing_the_diagram_keeps_the_title(client):
+    client.post("/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")})
+    client.put("/api/guides/1", json={"name": "Keep me."})
+
+    client.delete("/api/guides/1")
+
+    entry = client.get("/api/guides").json()["guides"][0]
+    assert entry["configured"] is False
+    assert entry["name"] == "Keep me."
+
+
+def test_replacing_the_diagram_keeps_the_title(client):
+    client.put("/api/guides/1", json={"name": "Keep me too."})
+    client.post("/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")})
+    assert client.get("/api/guides").json()["guides"][0]["name"] == "Keep me too."
+
+
+def test_replacing_the_diagram_reports_the_written_title(client):
+    """The upload response carries the effective title, not the shipped one."""
+    client.put("/api/guides/1", json={"name": "Shared build"})
+    body = client.post(
+        "/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")}
+    ).json()
+    assert body["name"] == "Shared build"
+    assert body["name_custom"] is True
+
+
+def test_manifest_stores_titles_outside_the_stage_entries(client, env):
+    client.post("/api/guides/1", files={"file": ("a.png", png_bytes(), "image/png")})
+    client.put("/api/guides/1", json={"name": "Written by the operator."})
+
+    manifest = json.loads((env["base"] / "var" / "guides" / "manifest.json").read_text())
+    assert manifest["names"] == {"1": "Written by the operator."}
+    assert "name" not in manifest["stages"]["1"]
+
+
+def test_a_manifest_without_the_names_key_needs_no_migration(env):
+    """An older manifest simply has no key, which reads as "use the YAML"."""
+    guides_dir = env["base"] / "var" / "guides"
+    guides_dir.mkdir(parents=True, exist_ok=True)
+    (guides_dir / "manifest.json").write_text(
+        json.dumps({"version": 1, "stages": {}, "instructions": {}}), encoding="utf-8"
+    )
+
+    # A fresh app, so the manifest above goes through the startup read.
+    with TestClient(create_app(env["config"])) as client:
+        entry = client.get("/api/guides").json()["guides"][0]
+        assert entry["name"] == "Stage 1"
+        assert entry["name_custom"] is False
+        assert client.get("/api/config").json()["stages"][0]["name"] == "Stage 1"
 
 
 # ---------------------------------------------------------- accepted formats

@@ -252,7 +252,10 @@ class FsCreateResult(BaseModel):
 
 class GuideEntry(BaseModel):
     index: int
+    # Effective title: the operator's own text when they wrote one, the stage name
+    # from the YAML otherwise.
     name: str
+    name_custom: bool = False
     configured: bool
     image_url: Optional[str] = None
     original_filename: Optional[str] = None
@@ -283,8 +286,13 @@ class GuideUploadResult(GuideEntry):
 
 
 class GuideUpdateBody(BaseModel):
-    """Body of ``PUT /api/guides/{index}``. Empty clears the override."""
+    """Body of ``PUT /api/guides/{index}``.
 
+    Both fields are optional and independent; only the ones present are applied.
+    An empty string clears that override, which is the reset action.
+    """
+
+    name: Optional[str] = None
     instructions: Optional[str] = None
 
 

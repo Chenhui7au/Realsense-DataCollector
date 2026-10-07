@@ -1,31 +1,7 @@
 ﻿# RealSense Data-Collector 后端接口设计文档
 
-版本 v0.14
-日期 2026-10-05
-
-v0.14 变更点。项目名统一为 RealSense Data-Collector，文档标题与 `app_title` 示例不再使用旧名。接口路径、字段与错误码未变。
-
-v0.13 变更点。`GET /api/health` 的 `active_session` 从恒为 `null` 改为真正给出进行中会话的摘要，这是刷新、新标签页与换浏览器能接回会话的依据。`GET /api/config` 的 `recording` 段新增 `output_name` 与 `bytes_per_second`：前者让描述产物的界面不必硬编码扩展名，后者让录制中的体积估算随流配置自适应。接口路径与错误码未变。
-
-v0.12 变更点。目录列表的 `shortcuts` 由个人目录加挂载点改为只列允许范围内的盘符，当前不存在的盘不下发。`GET /api/fs/list` 省略 `path` 时的起点由服务用户主目录改为首选数据盘，新增 4.5.1 说明这条规则。接口路径、其余字段与错误码未变。
-
-v0.11 变更点。新增 `guides.seed_defaults`，服务在示意图目录为空时自动画出整套默认示意图，使新建一轮的前置条件在一台刚装好的机器上即告满足。新增 8.1.1 说明判定规则与实现方式，启动自检流程增加一步。接口、字段与错误码未变。
-
-v0.10 变更点。录制文件扩展名由 `capture.bag` 改为 `capture.db3`。真机实测 `enable_record_to_file` 拒绝其他扩展名，文档原先的 `.bag` 会让录制直接失败。`GET /api/preview/snapshot` 明确为按需开启预览，因为它是 MJPEG 不可用时的降级方案，不应要求调用方先自行开流。修正 `6.11` 与 `6.12` 中 `STAGE_NOT_SAVED` 的状态码，与错误码表及状态机表保持一致，均为 409。
-
-v0.9 变更点。示例路径统一为 Windows 形态，允许浏览与写入的根部默认值改为盘符。接口、字段与错误码未变。
-
-本文档描述 RealSense Data-Collector 的后端接口契约、数据模型与持久化行为。系统级需求与架构见 `docs/DESIGN.md`，前端页面逻辑见 `docs/FRONTEND.md`。
-
-v0.8 变更点。项目信息对象移除 `session_count`。它原先给主页用，让采集员在开始新一轮前看出选定的目录里已有几轮会话，但这个信息在选择器里已经给过一遍，主页重复展示价值有限，且计数口径难以自洽。移除后 `3.5` 的字段表少一项，`4.1` 的示例同步。
-
-v0.7 变更点。接口设计评审后的一轮修正。创建会话补回相机可用性校验，这是 v0.6 重写时遗失的一项。阶段对象新增 `instructions` 与 `min_duration_s` 与 `max_duration_s`，让会话自描述，避免实时配置与会话快照产生漂移。停止录制与丢弃重录改为幂等，防止响应丢失后的重试被误报为失败。`DELETE` 会话允许作用于已结束的会话。批量上传明确为逐件独立不回滚。`record/start` 的 `bag_path` 更名为 `bag_abs_path`，与录制结果里的相对路径区分开。新增 `PATH_NOT_ALLOWED` 与 `DIR_NOT_WRITABLE` 错误码，目录浏览增加范围限制。
-
-v0.6 变更点。新增项目目录接口与设置持久化。会话新增 `name` 字段，创建会话必须指定名称。新增会话列表接口。健康检查的结构由 `disk` 改为 `project`，因为剩余空间的判定对象变成了项目目录。
-
-v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后的页面重建计时器。明确推进阶段只能作用于当前阶段，新增 `STAGE_NOT_CURRENT` 错误码。
-
----
+版本 v0.15
+日期 2026-10-07
 
 ## 1. 通用约定
 
@@ -46,13 +22,13 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 {
   "error": {
     "code": "STAGE_NOT_SAVED",
-    "message": "当前阶段尚未保存，不能进入下一阶段",
+    "message": "This stage has not been saved yet.",
     "detail": { "stage_index": 3 }
   }
 }
 ```
 
-`code` 是稳定的机器可读标识，前端按它做分支处理。`message` 是给人看的中文说明，可以随版本调整文案，不构成契约。`detail` 可选，携带定位信息。
+`code` 是稳定的机器可读标识，前端按它做分支处理。`message` 是给人看的英文说明，与界面语言一致，可以随版本调整文案，不构成契约。`detail` 可选，携带定位信息。
 
 ### 1.3 错误码表
 
@@ -89,7 +65,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 | `GUIDE_INVALID_IMAGE` | 400 | 文件无法解码为图像 |
 | `GUIDE_TOO_LARGE` | 413 | 文件体积超过上限 |
 | `GUIDE_UNSUPPORTED_TYPE` | 415 | 文件类型不在白名单内 |
-| `GUIDE_TEXT_TOO_LONG` | 400 | 阶段描述超过长度上限 |
+| `GUIDE_TEXT_TOO_LONG` | 400 | 阶段标题或描述超过长度上限，`detail.field` 给出是哪一项 |
 
 ---
 
@@ -124,7 +100,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 | --- | --- | --- |
 | GET | `/api/guides` | 获取示意图清单与就绪状态 |
 | POST | `/api/guides/{index}` | 上传或替换单个阶段的示意图 |
-| PUT | `/api/guides/{index}` | 写入或清空单个阶段的描述，JSON |
+| PUT | `/api/guides/{index}` | 写入或清空单个阶段的标题与描述，JSON |
 | POST | `/api/guides/batch` | 批量上传多张示意图 |
 | DELETE | `/api/guides/{index}` | 删除单个阶段的示意图 |
 | GET | `/api/guides/{index}/image` | 读取示意图文件 |
@@ -172,10 +148,10 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
   "stages": [
     {
       "index": 1,
-      "name": "正面平视",
-      "instructions": "将目标置于画面正中，保持静止，距离约零点五米。",
+      "name": "Front, level",
+      "instructions": "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take.",
       "min_duration_s": 1,
-      "max_duration_s": 60,
+      "max_duration_s": 300,
       "state": "idle",
       "allowed_actions": ["start"],
       "recording_started_at": null,
@@ -277,7 +253,8 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 ```json
 {
   "index": 1,
-  "name": "正面平视",
+  "name": "Front, level",
+  "name_custom": false,
   "configured": true,
   "image_url": "/api/guides/1/image",
   "original_filename": "guide_01.png",
@@ -287,24 +264,27 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
   "height": 1080,
   "uploaded_at": "2026-09-21T09:12:03+08:00",
   "sha256": "3ab1...",
-  "instructions": "将目标置于画面正中，保持静止。",
+  "instructions": "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take.",
   "instructions_custom": false
 }
 ```
 
-未配置时，`configured` 为 `false`，其余字段除 `index` 与 `name` 外全部为 `null`。`instructions` 是唯一一个不随 `configured` 变化的字段，未上传示意图的阶段照样可以有自己的描述。
+未配置时，`configured` 为 `false`，其余字段除 `index` 与 `name` 与 `name_custom` 外全部为 `null`。`name` 与 `instructions` 是仅有的两个不随 `configured` 变化的字段，未上传示意图的阶段照样可以有自己的标题与描述。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
+| `name` | string | 阶段标题，引导页与阶段轨道显示的就是它，取值见下 |
+| `name_custom` | bool | `true` 表示该标题由采集员在界面上写过，`false` 表示来自 YAML |
 | `instructions` | string | 引导页显示的那段操作说明，取值见下 |
 | `instructions_custom` | bool | `true` 表示该文案由采集员在界面上写过，`false` 表示来自 YAML |
 
-**描述与示意图是两件事**，各自独立编辑，互不牵连。因此有两条容易搞混的规则。
+**标题与描述都是两件事各一，与示意图也互不牵连**，各自独立编辑。因此有三条容易搞混的规则。
 
-- 只改描述不会让阶段变成已配置，就绪判断只看图片
-- 删除示意图不会删掉描述，重新上传后原描述仍在
+- 只改标题或描述不会让阶段变成已配置，就绪判断只看图片
+- 删除示意图不会删掉标题与描述，重新上传后两者仍在
+- 改标题不会动描述，改描述也不会动标题
 
-`instructions` 的取值规则。清单的 `instructions` 段里存了该阶段的文案时用它，否则用 YAML 阶段配置里的 `instructions`。`instructions_custom` 就是用来区分这两种来源的，界面据此显示 Custom 或 From config，并决定要不要给出 Reset。
+`name` 与 `instructions` 的取值规则相同。清单的 `names` 或 `instructions` 段里存了该阶段的值时用它，否则用 YAML 阶段配置里的 `name` 或 `instructions`。两个 `_custom` 字段就是用来区分这两种来源的，界面据此显示 Custom 或 From config，并决定要不要给出 Reset。
 
 `sha256` 有两个用途。一是前端的缓存指纹，二是判断素材是否被替换过。
 
@@ -336,7 +316,7 @@ v0.5 变更点。阶段对象新增 `recording_started_at` 字段，供刷新后
 | `enough` | bool | 剩余空间是否高于配置的阈值 |
 | `error` | string\|null | 不可用时的原因，可用时为 `null` |
 
-`error` 是一句给人看的中文说明。前端直接展示它，不需要自己拼原因文案，因为只有服务知道到底是权限问题还是空间问题。
+`error` 是一句给人看的英文说明。前端直接展示它，不需要自己拼原因文案，因为只有服务知道到底是权限问题还是空间问题。
 
 ### 3.6 目录条目与列表
 
@@ -444,7 +424,7 @@ stateDiagram-v2
     "connected": true,
     "name": "Intel RealSense D435i",
     "serial": "0123456789",
-    "firmware": "5.13.0.50",
+    "firmware": "5.17.3.10",
     "usb_type": "3.2",
     "reason": null
   },
@@ -516,9 +496,9 @@ stateDiagram-v2
   "stages": [
     {
       "index": 1,
-      "name": "正面平视",
-      "instructions": "将目标置于画面正中，距离保持在零点五米左右。",
-      "max_duration_s": 60
+      "name": "Front, level",
+      "instructions": "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take.",
+      "max_duration_s": 300
     }
   ]
 }
@@ -540,13 +520,13 @@ stateDiagram-v2
 
 会话建立之后，阶段相关的文案与时长以会话里的阶段对象为准，见 3.2。两处的值可能不同，因为会话里的是创建时冻结的快照，而这里是实时的。前端不能把这两者混用。
 
-`stages[].instructions` 在这里给出的是**生效值**，也就是采集员在示意图配置页写过就用他写的，没写过就用 YAML 的。这样会话建立之前打开引导页看到的文案与配置页一致。
+`stages[].instructions` 与 `stages[].name` 在这里给出的是**生效值**，也就是采集员在示意图配置页写过就用他写的，没写过就用 YAML 的。这样会话建立之前打开引导页看到的标题与文案与配置页一致。
 
 `min_duration_s` 需要暴露出来，否则前端无法在录制时提示“再录一会儿”，只能等提交后报错。
 
 该接口只暴露前端需要的配置项，不含相机参数与文件路径等敏感或无关内容。
 
-阶段名称只能在 YAML 里改并重启服务，改动属于采集流程定义，应当留下痕迹。操作说明是例外，它能逐阶段在示意图配置页上改写，见 5.6。想批量改还是走 YAML，界面上的覆盖只是逐条调整。
+阶段名称只能在 YAML 里改并重启服务，改动属于采集流程定义，应当留下痕迹。标题与操作说明是例外，它们能逐阶段在示意图配置页上改写，见 5.6。想批量改还是走 YAML，界面上的覆盖只是逐条调整。
 
 ### 4.3 读取项目目录
 
@@ -684,7 +664,8 @@ stateDiagram-v2
   "guides": [
     {
       "index": 1,
-      "name": "正面平视",
+      "name": "Front, level",
+      "name_custom": false,
       "configured": true,
       "image_url": "/api/guides/1/image",
       "original_filename": "guide_01.png",
@@ -694,12 +675,13 @@ stateDiagram-v2
       "height": 1080,
       "uploaded_at": "2026-09-21T09:12:03+08:00",
       "sha256": "3ab1...",
-      "instructions": "将目标置于画面正中，保持静止。",
+      "instructions": "Stand square to the subject at roughly 60 cm and keep still for the whole take.",
       "instructions_custom": true
     },
     {
       "index": 3,
-      "name": "俯视",
+      "name": "Front right, 45 degrees",
+      "name_custom": false,
       "configured": false,
       "image_url": null,
       "original_filename": null,
@@ -709,14 +691,14 @@ stateDiagram-v2
       "height": null,
       "uploaded_at": null,
       "sha256": null,
-      "instructions": "从上方俯拍，保持水平距离不变。",
+      "instructions": "Orbit 45 degrees to the right from the starting position, keeping height and distance unchanged.",
       "instructions_custom": false
     }
   ]
 }
 ```
 
-`ready` 为 `true` 的条件是八个阶段全部 `configured`，且 `required` 为 `true` 时这个值才参与会话创建拦截。`missing_indices` 直接给前端做定位跳转用。描述写了多少不影响 `ready`，就绪只看图片。
+`ready` 为 `true` 的条件是八个阶段全部 `configured`，且 `required` 为 `true` 时这个值才参与会话创建拦截。`missing_indices` 直接给前端做定位跳转用。标题与描述写了多少都不影响 `ready`，就绪只看图片。
 
 这个状态来自磁盘上的持久化清单，而不是内存里临时累积的结果。因此服务重启、机器重启、换浏览器之后，返回的都还是同一份状态。前端据此渲染主页，就能做到已配置齐全时不提示配置。
 
@@ -744,6 +726,8 @@ stateDiagram-v2
 ```json
 {
   "index": 1,
+  "name": "Front, level",
+  "name_custom": false,
   "configured": true,
   "image_url": "/api/guides/1/image",
   "original_filename": "guide_01.png",
@@ -753,7 +737,7 @@ stateDiagram-v2
   "height": 1080,
   "uploaded_at": "2026-09-21T09:12:03+08:00",
   "sha256": "3ab1...",
-  "instructions": "将目标置于画面正中，保持静止。",
+  "instructions": "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take.",
   "instructions_custom": false,
   "generated_preview": true,
   "ready": false
@@ -762,7 +746,7 @@ stateDiagram-v2
 
 响应里带上 `ready` 与整体进度，前端上传完一张后不需要额外请求就能刷新进度条。
 
-上传只影响图片与 `generated_preview`，描述与 `instructions_custom` 原样返回，替换一张图不会改动文案。
+上传只影响图片与 `generated_preview`，标题与描述原样返回，替换一张图不会改动文案。
 
 ### 5.3 批量上传
 
@@ -803,7 +787,7 @@ Content-Type: image/jpeg
 ```json
 {
   "applied": [1],
-  "failed": [{ "index": 3, "code": "GUIDE_INVALID_IMAGE", "message": "无法解码为图像" }],
+  "failed": [{ "index": 3, "code": "GUIDE_INVALID_IMAGE", "message": "That file cannot be decoded as an image." }],
   "guides": { "...": "与 5.1 响应相同结构" }
 }
 ```
@@ -818,7 +802,7 @@ Content-Type: image/jpeg
 
 1. 校验该阶段已配置，否则 404 与 `GUIDE_NOT_FOUND`
 2. 删除原图与展示副本
-3. 从清单移除条目
+3. 从清单移除条目，标题与描述条目不动
 
 响应 200
 
@@ -826,7 +810,7 @@ Content-Type: image/jpeg
 { "index": 1, "configured": false, "ready": false, "uploaded": 7 }
 ```
 
-删除不影响任何一轮已完成的会话数据，因为示意图只在引导页展示时读取。
+删除不影响任何一轮已完成的会话数据，因为示意图只在引导页展示时读取。该阶段的标题与描述也保留着，重新上传图片后两者仍在，不需要重写。
 
 ### 5.5 读取示意图
 
@@ -845,35 +829,39 @@ Content-Type: image/jpeg
 
 `v` 参数只影响缓存键，服务端不校验它的取值。
 
-### 5.6 设置阶段描述
+### 5.6 设置阶段标题与描述
 
 `PUT /api/guides/{index}`
 
-写入引导页显示的那段操作说明。这一步与示意图上传分开，因为两者是两件事，各自独立编辑，谁也不覆盖谁。
+写入该阶段的标题与引导页显示的那段操作说明。这一步与示意图上传分开，因为三者是独立的事，各自编辑，谁也不覆盖谁。
 
-请求为 JSON，不是 multipart，因为它不带二进制。
+请求为 JSON，不是 multipart，因为它不带二进制。两个字段都可选且相互独立，**只处理请求里出现的字段**，因此改标题不会动描述，反之亦然。一个都不给时是空操作，原值不变。
 
 ```json
-{ "instructions": "将目标置于画面正中，保持静止，距离约零点五米。" }
+{ "name": "Protocol 1: Shared build", "instructions": "Hold the camera square to the subject at roughly 60 cm." }
 ```
 
 服务行为。
 
 1. `index` 在阶段范围内，否则 404 与 `STAGE_NOT_FOUND`
-2. 去掉首尾空白后长度不超过 `guides.instructions_max_length`，否则 400 与 `GUIDE_TEXT_TOO_LONG`
-3. 非空则写入清单的 `instructions` 段，空则删除该条目，也就是恢复 YAML 的默认文案
-4. 更新清单并返回该阶段的完整条目
+2. `name` 折叠成单行，`instructions` 去掉首尾空白。两者都先校验，任一项超限则整体拒绝，不会只写一半
+3. `name` 长度不超过 `guides.name_max_length`，`instructions` 不超过 `guides.instructions_max_length`，否则 400 与 `GUIDE_TEXT_TOO_LONG`，`detail.field` 指出是哪一项
+4. 请求里出现的字段，值非空则写入清单对应的 `names` 或 `instructions` 段，空则删除该条目，也就是恢复 YAML 的默认值
+5. 更新清单并返回该阶段的完整条目
 
 **空值即重置**，这是刻意的，界面上的 Reset 按钮走的就是这条路，因此不需要第二个接口。
 
-写入前不必先有示意图。描述与图片互不依赖，未上传图片的阶段照样可以先写文案，`instructions_custom` 与 `configured` 因此在返回里可能一个是 `true` 一个是 `false`。
+**标题会被折叠成单行**。连续空白、制表符与 Excel 复制过来的垂直制表符全部并成一个空格。标题在阶段轨道、引导页大标题与结束页结果卡片上都是行内渲染，换行没有意义，而从电子表格粘过来的一整段往往是多行的。
+
+写入前不必先有示意图。标题、描述与图片三者互不依赖，未上传图片的阶段照样可以先写标题，因此返回里 `name_custom` 与 `configured` 可能一个是 `true` 一个是 `false`。
 
 响应 200 返回更新后的示意图条目，结构与 3.4 一致，另外带上进度。
 
 ```json
 {
   "index": 1,
-  "name": "正面平视",
+  "name": "Protocol 1: Shared build",
+  "name_custom": true,
   "configured": false,
   "image_url": null,
   "original_filename": null,
@@ -883,16 +871,16 @@ Content-Type: image/jpeg
   "height": null,
   "uploaded_at": null,
   "sha256": null,
-  "instructions": "将目标置于画面正中，保持静止，距离约零点五米。",
+  "instructions": "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take.",
   "instructions_custom": true,
   "ready": false,
   "uploaded": 0
 }
 ```
 
-**它不影响就绪判断**。`ready` 与 `uploaded` 只统计图片，写了描述不会让一个阶段变得已配置。返回里带上它们只是为了前端能在同一次响应后刷新进度条。
+**它不影响就绪判断**。`ready` 与 `uploaded` 只统计图片，写了标题或描述不会让一个阶段变得已配置。返回里带上它们只是为了前端能在同一次响应后刷新进度条。
 
-**与已建立会话的关系**。会话创建时会冻结一份阶段快照，含当时生效的文案，见 8.4。因此改描述只影响**之后新建**的会话，正在进行中的会话仍显示它创建时的那一份，这是刻意的，避免采集员录到一半发现引导页文案被改了。
+**与已建立会话的关系**。会话创建时会冻结一份阶段快照，含当时生效的标题与文案，见 8.4。因此改标题只影响**之后新建**的会话，正在进行中的会话仍显示它创建时的那一份，这是刻意的，避免采集员录到一半发现引导页文案被改了。
 
 ---
 
@@ -938,7 +926,7 @@ Content-Type: image/jpeg
 请求体
 
 ```json
-{ "name": "session_a", "operator": "zhangsan", "note": "批次 A" }
+{ "name": "session_a", "operator": "zhangsan", "note": "batch A" }
 ```
 
 `name` 必填，`operator` 与 `note` 可选，默认留空。
@@ -1061,7 +1049,7 @@ Content-Type: image/jpeg
   "state": "recording",
   "started_at": "2026-09-20T14:31:02+08:00",
   "bag_abs_path": "C:\\Users\\ch7au\\Documents\\Project_A\\session_a\\stage_01\\capture.db3",
-  "auto_stop_at_s": 60
+  "auto_stop_at_s": 300
 }
 ```
 
@@ -1208,7 +1196,7 @@ Content-Type: image/jpeg
 
 清单文件放在示意图目录下，是唯一的索引，记录每个阶段的原始文件名、内容类型、体积、像素尺寸、上传时间与内容指纹。展示副本以 `.display.` 中缀命名，与原件共存，原件永不丢失。
 
-采集员写的阶段描述也存在这一份清单里，放在与 `stages` 平级的 `instructions` 段，而不是嵌进各个阶段条目。这样做的理由是描述与图片是两件独立的事，删除或替换图片时不该连带丢掉文案。
+采集员写的阶段标题与描述也存在这一份清单里，分别放在与 `stages` 平级的 `names` 段与 `instructions` 段，而不是嵌进各个阶段条目。这样做的理由是标题与描述和图片是三件独立的事，删除或替换图片时不该连带丢掉文案。
 
 ```json
 {
@@ -1228,12 +1216,15 @@ Content-Type: image/jpeg
     }
   },
   "instructions": {
-    "1": "将目标置于画面正中，保持静止，距离约零点五米。"
+    "1": "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take."
+  },
+  "names": {
+    "1": "Protocol 1: Shared build"
   }
 }
 ```
 
-`instructions` 段里没有的阶段就用 YAML 的默认文案，因此这一段的缺失与为空是完全等价的，不需要迁移。条目里的值必须是字符串，其他类型在载入时被丢弃并记日志。
+`names` 与 `instructions` 段里没有的阶段就用 YAML 的默认值，因此这两段的缺失与为空是完全等价的，不需要迁移。字段值必须是字符串，其他类型在载入时被丢弃并记日志。`names` 里的值在载入时同样会被折叠成单行，所以手工编辑清单也不会让标题里出现换行。
 
 清单用 UTF-8 写入且不做 ASCII 转义，中文直接以原文落盘，便于人工查看与编辑。写入采用先写临时文件再原子重命名的方式。若服务在写入过程中被终止，清单不会变成半截内容，最多是本次上传未生效。同时备份上一版为 `manifest.json.bak`，便于极端情况下回滚。
 
@@ -1260,9 +1251,9 @@ Content-Type: image/jpeg
 3. 校验项目目录，不存在则创建，并探测可写性与剩余空间
 4. 若示意图目录完全为空且 `guides.seed_defaults` 为真，画出整套默认示意图，见 8.1.1
 5. 读取示意图清单。不存在则视为全部未配置，并按配置决定是否尝试从目录下的文件重建
-6. 校验清单条目指向的文件是否真实存在，缺失的移除并记告警。描述条目独立处理，指向不存在或超出阶段范围的一律丢弃，不影响图片
+6. 校验清单条目指向的文件是否真实存在，缺失的移除并记告警。标题与描述条目独立处理，阶段序号越界或值不是字符串的一律丢弃，不影响图片
 7. 校验清单的 `version` 字段，低于当前版本则执行迁移并写回
-8. 把有效的阶段配置与描述载入内存，供接口直接读取
+8. 把有效的阶段配置、标题与描述载入内存，供接口直接读取
 9. 扫描项目目录，恢复未完成会话的状态，保证重启后能继续
 
 清单与实际文件可能因为人为误删而不一致，第六种情况是给手工拷贝素材留的后路，对应下面这张表。
@@ -1272,7 +1263,7 @@ Content-Type: image/jpeg
 | 清单条目存在，文件也在 | 正常载入 |
 | 清单条目存在，文件缺失 | 移除该条目并记入告警日志，该阶段回到未配置 |
 | 清单不存在，但目录下有符合命名规则的文件 | 按阶段序号重建清单并记入日志 |
-| 描述条目的阶段序号越界或值不是字符串 | 丢弃该条并记入日志，图片与就绪状态不受影响 |
+| 标题或描述条目的阶段序号越界或值不是字符串 | 丢弃该条并记入日志，图片与就绪状态不受影响 |
 | 清单的 `version` 低于当前版本 | 执行迁移并写回 |
 | 设置文件里的项目目录不存在 | 创建它，失败则标记为不可用并保留原值 |
 | 设置文件存在但内容损坏 | 记告警，回退到 YAML 的初始值，不阻止服务启动 |
@@ -1315,7 +1306,7 @@ Content-Type: image/jpeg
   settings.json
   settings.json.bak
   guides/
-    manifest.json        # 图片条目与采集员写的阶段描述
+    manifest.json        # 图片条目、阶段标题与采集员写的阶段描述
     manifest.json.bak
     stage_01.png
     stage_01.display.jpg
@@ -1344,24 +1335,36 @@ Content-Type: image/jpeg
 
 ```json
 {
+  "version": 1,
   "session_id": "20260920-143012-a1b2",
   "name": "session_a",
   "created_at": "2026-09-20T14:30:12+08:00",
   "finished_at": "2026-09-20T14:58:41+08:00",
   "status": "finished",
+  "current_stage": 8,
   "operator": "zhangsan",
-  "note": "批次 A",
+  "note": "batch A",
   "device": {
     "name": "Intel RealSense D435i",
     "serial": "0123456789",
-    "firmware": "5.13.0.50"
+    "firmware": "5.17.3.10"
   },
-  "app_version": "0.8.0",
-  "config_snapshot": { "...": "当次生效的阶段配置快照" }
+  "app_version": "0.1.0",
+  "config_snapshot": [
+    {
+      "index": 1,
+      "name": "Front, level",
+      "instructions": "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take.",
+      "min_duration_s": 1.0,
+      "max_duration_s": 300.0,
+      "state": "saved",
+      "note": ""
+    }
+  ]
 }
 ```
 
-`config_snapshot` 是刻意加的。配置将来会改，把当次生效的配置冻结在会话里，后续分析数据时才能还原当时的采集条件。
+`config_snapshot` 是刻意加的。配置将来会改，把当次生效的配置冻结在会话里，后续分析数据时才能还原当时的采集条件。它是阶段对象的数组而不是单条摘要，因为重启后要能据此区分「录制到一半被杀」与「正常录完」，只留一份合并后的配置做不到这一点。
 
 目录名可能会被人在文件系统里手工改掉，这会使它与 `session.json` 里的 `name` 不一致。服务以磁盘上的目录名作为权威，启动时若发现不一致则修正记录并记告警，而不是拒绝加载。采集员手工整理目录是合理行为，不应该因此让数据不可读。
 
@@ -1369,8 +1372,9 @@ Content-Type: image/jpeg
 
 ```json
 {
+  "version": 1,
   "stage_index": 1,
-  "name": "正面平视",
+  "name": "Front, level",
   "state": "saved",
   "started_at": "2026-09-20T14:31:02+08:00",
   "stopped_at": "2026-09-20T14:31:14+08:00",
@@ -1384,7 +1388,7 @@ Content-Type: image/jpeg
 }
 ```
 
-`session.json` 与 `meta.json` 的字段是接口响应的超集。落盘的版本多出校验和与设备信息，接口按前端需要裁剪后再返回，避免把无用字段推给浏览器。
+`session.json` 与 `meta.json` 的字段是接口响应的超集。落盘的版本多出校验和与设备信息，接口按前端需要裁剪后再返回，避免把无用字段推给浏览器。两个文件都带一个 `version` 字段，当前为 `1`，与示意图清单的 `version` 用途相同，留给将来做迁移。
 
 示意图目录与会话目录是两套生命周期。前者长期驻留，跨会话与跨重启存活。后者按轮次归档。会话记录里不引用示意图文件，因此清理历史会话、迁移数据目录、换一批示意图，三者互不影响。
 

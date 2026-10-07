@@ -15,8 +15,9 @@ Four decisions worth naming.
   beside it with ``.display.`` in the name.
 * On replace, a stale file with the other extension is removed, otherwise a PNG
   replaced by a JPEG would leave the PNG reachable through ``size=original``.
-* The per-stage description lives in the same manifest but outside the ``stages``
-  map, so removing a diagram does not throw away the text that goes with it.
+* The per-stage description and title live in the same manifest but outside the
+  ``stages`` map, so removing a diagram does not throw away the text that goes
+  with it.
 """
 
 from __future__ import annotations
@@ -48,6 +49,10 @@ DISPLAY_INFIX = ".display."
 # stage index to text. Deliberately a sibling of "stages" and not a field inside
 # an entry: the text outlives the image, so deleting a diagram keeps it.
 INSTRUCTIONS_KEY = "instructions"
+# Same idea for the operator written stage titles. A sibling key rather than a
+# field on the "stages" entry, so a title can be written before its diagram is
+# uploaded and survives the diagram being replaced or removed.
+NAMES_KEY = "names"
 # Quality for the guide screen copy. Not in the YAML because it is not something
 # an operator needs to tune, it only trades bytes for smoothness on a projector.
 DISPLAY_JPEG_QUALITY = 85
@@ -81,6 +86,17 @@ _STAGE_FILE_RE = re.compile(
 )
 
 
+def collapse_title(text: str) -> str:
+    """Fold a written title onto one line with single spaces.
+
+    A title is rendered inline on the stage rail, the guide heading and the
+    result cards, none of which can show a line break usefully, and a pasted
+    multi line heading is the common way to get one. Runs of whitespace, tabs and
+    the vertical tab Excel puts in a copied cell all collapse to a single space.
+    """
+    return " ".join(text.split())
+
+
 class GuideStore:
     """Manifest backed storage for the eight stage diagrams."""
 
@@ -96,6 +112,8 @@ class GuideStore:
         self._entries: Dict[int, Dict[str, Any]] = {}
         # index -> operator written description. Absent means "use the YAML".
         self._instructions: Dict[int, str] = {}
+        # index -> operator written title. Absent means "use the YAML".
+        self._names: Dict[int, str] = {}
 
     # --------------------------------------------------------------- startup
 
@@ -108,6 +126,7 @@ class GuideStore:
             raw, from_disk = self._read_manifest()
             entries = self._parse_entries(raw)
             instructions = self._parse_instructions(raw)
+            names = self._parse_names(raw)
             dirty = from_disk is False
 
             # Branch two: an entry whose file vanished. Drop it and say so,
@@ -135,6 +154,7 @@ class GuideStore:
 
             self._entries = entries
             self._instructions = instructions
+            self._names = names
             if dirty:
                 self._write_manifest()
 
@@ -226,28 +246,41 @@ class GuideStore:
             entries[index] = value
         return entries
 
-    def _parse_instructions(self, raw: Dict[str, Any]) -> Dict[int, str]:
-        """Read the description map, discarding anything that is not a string.
+    def _parse_text_map(self, raw: Dict[str, Any], key: str) -> Dict[int, str]:
+        """Read one index-to-text override map, discarding unusable entries.
 
-        A manifest written before descriptions existed simply has no key, which
-        is why the field needs no migration: an empty map means every stage falls
-        back to the instructions in the YAML.
+        A manifest written before descriptions or titles existed simply has no
+        such key, which is why neither field needs a migration: an absent key and
+        an empty map both mean every stage falls back to the YAML.
         """
-        stored = raw.get(INSTRUCTIONS_KEY)
+        stored = raw.get(key)
         if not isinstance(stored, dict):
             return {}
-        instructions: Dict[int, str] = {}
-        for key, value in stored.items():
+        parsed: Dict[int, str] = {}
+        for stored_key, value in stored.items():
             try:
-                index = int(key)
+                index = int(stored_key)
             except (TypeError, ValueError):
                 continue
             if not self.config.has_stage(index) or not isinstance(value, str):
                 continue
             text = value.strip()
             if text:
-                instructions[index] = text
-        return instructions
+                parsed[index] = text
+        return parsed
+
+    def _parse_instructions(self, raw: Dict[str, Any]) -> Dict[int, str]:
+        """Read the description map. Empty values fall back to the YAML."""
+        return self._parse_text_map(raw, INSTRUCTIONS_KEY)
+
+    def _parse_names(self, raw: Dict[str, Any]) -> Dict[int, str]:
+        """Read the title map, folded onto one line like a written value."""
+        names: Dict[int, str] = {}
+        for index, text in self._parse_text_map(raw, NAMES_KEY).items():
+            folded = collapse_title(text)
+            if folded:
+                names[index] = folded
+        return names
     def _entry_files_present(self, entry: Dict[str, Any]) -> bool:
         original = entry.get("file")
         if not isinstance(original, str) or not original:
@@ -340,15 +373,19 @@ class GuideStore:
     def _guide_object(self, index: int) -> Dict[str, Any]:
         """One guide entry. Unconfigured stages carry nulls, not empty strings."""
         stage = self.config.stage_config(index)
-        name = stage["name"] if stage else str(index)
+        default_name = stage["name"] if stage else str(index)
         default_instructions = stage["instructions"] if stage else ""
         entry = self._entries.get(index)
-        override = self._instructions.get(index)
-        instructions = override if override else default_instructions
+        name = self.effective_name(index)
+        instructions = self._instructions.get(index) or default_instructions
+        # Truthy check, not "is not None": an override that folds to nothing is
+        # dropped on write, so any present value is a real one.
+        name_custom = bool(self._names.get(index))
         if entry is None:
             return {
                 "index": index,
                 "name": name,
+                "name_custom": name_custom,
                 "configured": False,
                 "image_url": None,
                 "original_filename": None,
@@ -359,11 +396,12 @@ class GuideStore:
                 "uploaded_at": None,
                 "sha256": None,
                 "instructions": instructions,
-                "instructions_custom": override is not None,
+                "instructions_custom": index in self._instructions,
             }
         return {
             "index": index,
             "name": name,
+            "name_custom": name_custom,
             "configured": True,
             "image_url": f"/api/guides/{index}/image",
             "original_filename": entry.get("original_filename"),
@@ -374,15 +412,21 @@ class GuideStore:
             "uploaded_at": entry.get("uploaded_at"),
             "sha256": entry.get("sha256"),
             "instructions": instructions,
-            "instructions_custom": override is not None,
+            "instructions_custom": index in self._instructions,
         }
 
-    def set_instructions(self, index: int, text: Optional[str]) -> Dict[str, Any]:
-        """Store or clear the description for one stage.
+    def set_texts(self, index: int, changes: Dict[str, Optional[str]]) -> Dict[str, Any]:
+        """Store or clear the title and description overrides for one stage.
 
-        An empty value clears the override instead of storing an empty string, so
-        the stage falls back to the YAML instructions again. That doubles as the
-        reset action, which is why there is no separate endpoint for it.
+        ``changes`` maps a field name (``name`` or ``instructions``) to its new
+        value. Only the keys present are touched, so the two fields stay
+        independent: editing one never rewrites the other. An empty value clears
+        that override instead of storing an empty string, so the stage falls back
+        to the YAML again. That doubles as the reset action, which is why there is
+        no separate endpoint for it.
+
+        Both values are validated before either is applied, so a rejected title
+        never leaves a half applied description behind.
 
         docs/API.md section 5.6. Nothing here touches a project directory: this is
         the same service side store as the diagrams.
@@ -393,26 +437,49 @@ class GuideStore:
                 detail={"stage_index": index, "total_stages": self.config.total_stages},
             )
 
-        cleaned = (text or "").strip()
-        limit = self.config.guide_instructions_max_length
-        if len(cleaned) > limit:
-            raise ApiError(
-                "GUIDE_TEXT_TOO_LONG",
-                f"Keep the description to {limit} characters or fewer.",
-                detail={"index": index, "length": len(cleaned), "max_length": limit},
-            )
+        cleaned: Dict[str, Optional[str]] = {}
+        if "name" in changes:
+            title = collapse_title(changes["name"] or "")
+            limit = self.config.guide_name_max_length
+            if len(title) > limit:
+                raise ApiError(
+                    "GUIDE_TEXT_TOO_LONG",
+                    f"Keep the title to {limit} characters or fewer.",
+                    detail={"index": index, "field": "name", "length": len(title), "max_length": limit},
+                )
+            cleaned["name"] = title or None
+        if "instructions" in changes:
+            text = (changes["instructions"] or "").strip()
+            limit = self.config.guide_instructions_max_length
+            if len(text) > limit:
+                raise ApiError(
+                    "GUIDE_TEXT_TOO_LONG",
+                    f"Keep the description to {limit} characters or fewer.",
+                    detail={
+                        "index": index,
+                        "field": "instructions",
+                        "length": len(text),
+                        "max_length": limit,
+                    },
+                )
+            cleaned["instructions"] = text or None
 
         with self.lock:
-            if cleaned:
-                self._instructions[index] = cleaned
-            else:
-                self._instructions.pop(index, None)
+            for field_name, value in cleaned.items():
+                target = self._names if field_name == "name" else self._instructions
+                if value:
+                    target[index] = value
+                else:
+                    target.pop(index, None)
             self._write_manifest()
             result = self._guide_object(index)
 
-        log.info(
-            "guide %d description %s", index, "set" if cleaned else "cleared"
-        )
+        if cleaned:
+            log.info(
+                "guide %d text updated: %s",
+                index,
+                ", ".join(f"{name}={'set' if value else 'cleared'}" for name, value in cleaned.items()),
+            )
         return result
 
     def effective_instructions(self, index: int) -> str:
@@ -423,6 +490,15 @@ class GuideStore:
                 return override
             stage = self.config.stage_config(index)
             return stage["instructions"] if stage else ""
+
+    def effective_name(self, index: int) -> str:
+        """Stage title a screen should show. Override when set, YAML otherwise."""
+        with self.lock:
+            override = self._names.get(index)
+            if override:
+                return override
+            stage = self.config.stage_config(index)
+            return stage["name"] if stage else str(index)
 
     def file_for(self, index: int, size: str = "display") -> Tuple[Path, str, str]:
         """Resolve the file to serve. Returns path, content type and sha256."""
@@ -671,6 +747,7 @@ class GuideStore:
             INSTRUCTIONS_KEY: {
                 str(index): text for index, text in sorted(self._instructions.items())
             },
+            NAMES_KEY: {str(index): text for index, text in sorted(self._names.items())},
         }
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -732,9 +809,10 @@ class GuideStore:
                 "root": str(self.root),
                 "configured": sorted(self._entries.keys()),
                 "customised": sorted(self._instructions.keys()),
+                "renamed": sorted(self._names.keys()),
                 "persist": self.config.guides_persist,
                 "backup_present": self.backup_path.is_file(),
             }
 
 
-__all__ = ["GuideStore", "MANIFEST_NAME", "MANIFEST_VERSION"]
+__all__ = ["GuideStore", "MANIFEST_NAME", "MANIFEST_VERSION", "NAMES_KEY", "INSTRUCTIONS_KEY", "collapse_title"]

@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { api } from '@/api'
-import type { GuideEntry, GuidesResponse } from '@/api'
+import type { GuideEntry, GuideUpdateBody, GuidesResponse } from '@/api'
 import { describeError } from '@/api/errorText'
 import { useToast } from './useToast'
 
@@ -8,6 +8,14 @@ const guides = ref<GuidesResponse | null>(null)
 const loaded = ref(false)
 const busyIndex = ref<number | null>(null)
 const batchBusy = ref(false)
+
+/*
+ * Bumped for one stage after its text is written, so that card resyncs its
+ * drafts from the server. A content watch alone is not enough: Reset clears both
+ * fields, and one of them may already hold the config value, so its prop never
+ * changes and the field would keep whatever the card put there optimistically.
+ */
+const textSyncTokens = ref(new Map<number, number>())
 
 const byIndex = computed(() => {
   const map = new Map<number, GuideEntry>()
@@ -108,20 +116,25 @@ export function useGuides() {
     }
   }
 
-  async function saveInstructions(index: number, text: string): Promise<{ ok: boolean; message?: string }> {
+  async function saveTexts(
+    index: number,
+    fields: GuideUpdateBody,
+    verb: 'saved' | 'reset',
+  ): Promise<{ ok: boolean; message?: string }> {
     busyIndex.value = index
     try {
-      const result = await api.saveGuideInstructions(index, text)
-      // The server reports the text it actually stored, which is the trimmed
-      // value, so reload rather than trusting the local draft.
+      const result = await api.updateGuide(index, fields)
+      // The server reports what it actually stored, trimmed and folded, so
+      // reload rather than trusting the local draft.
       await load()
-      toast.success(
-        result.instructions_custom ? `${result.name} description saved` : `${result.name} description reset`,
-      )
+      const next = new Map(textSyncTokens.value)
+      next.set(index, (next.get(index) ?? 0) + 1)
+      textSyncTokens.value = next
+      toast.success(`${result.name} ${verb}`)
       return { ok: true }
     } catch (error) {
       const { message } = describeError(error)
-      toast.danger('Description not saved', message)
+      toast.danger('Not saved', message)
       return { ok: false, message }
     } finally {
       busyIndex.value = null
@@ -148,10 +161,11 @@ export function useGuides() {
     progress,
     busyIndex,
     batchBusy,
+    textSyncTokens,
     load,
     upload,
     uploadBatch,
-    saveInstructions,
+    saveTexts,
     remove,
     inferStageFromFilename,
   }

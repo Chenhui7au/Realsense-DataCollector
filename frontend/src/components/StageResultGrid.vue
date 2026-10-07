@@ -82,8 +82,19 @@ const rows = computed<Row[]>(() =>
   border-style: dashed;
 }
 
+/*
+ * 4:3 matches the colour stream the poster frame normally comes from, and
+ * contain keeps the whole frame visible when it does not: a plan without a
+ * colour stream falls back to depth, which is 848x480 and would be cropped by a
+ * fixed frame plus cover.
+ *
+ * Absolute for the same reason as the diagram card: the shot is a grid
+ * container, so a percentage height on the image resolves against the auto sized
+ * row rather than the 4:3 box, and a taller frame overflows and is clipped.
+ */
 .rcard__shot {
-  aspect-ratio: 16 / 9;
+  position: relative;
+  aspect-ratio: 4 / 3;
   background: #0d1517;
   display: grid;
   place-items: center;
@@ -91,9 +102,11 @@ const rows = computed<Row[]>(() =>
 }
 
 .rcard__shot img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .rcard__none {

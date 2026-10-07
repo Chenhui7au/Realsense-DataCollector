@@ -320,6 +320,15 @@ def test_a_guides_description_reaches_a_new_session(harness):
     assert stages[0]["instructions"] == "Do the thing for stage 1."
 
 
+def test_a_guides_title_reaches_a_new_session(harness):
+    """Same rule for the title: the frozen stage table carries what was on screen."""
+    harness.client.put("/api/guides/2", json={"name": "Front left, wide"})
+    harness.set_project()
+    stages = harness.create().json()["stages"]
+    assert stages[1]["name"] == "Front left, wide"
+    assert stages[0]["name"] == "Stage 1"
+
+
 def test_second_session_is_refused_while_one_is_running(harness):
     harness.set_project()
     harness.create("session_a")

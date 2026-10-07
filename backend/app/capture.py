@@ -90,14 +90,17 @@ class CaptureService:
     def _stage_snapshot(self) -> List[Dict[str, Any]]:
         """The frozen per stage config for a new session.
 
-        Starts from the YAML and then applies the operator's descriptions from the
-        guides screen, so a session created now carries the wording that is
-        actually on screen. docs/API.md section 5.6 keeps this one directional:
-        editing a description later does not reach into a round already running.
+        Starts from the YAML and then applies the operator's titles and
+        descriptions from the guides screen, so a session created now carries the
+        wording that is actually on screen. docs/API.md section 5.6 keeps this one
+        directional: editing either later does not reach into a round already
+        running.
         """
         snapshot = self.config.stage_snapshot()
         for item in snapshot:
-            item["instructions"] = self.guides.effective_instructions(int(item["index"]))
+            index = int(item["index"])
+            item["name"] = self.guides.effective_name(index)
+            item["instructions"] = self.guides.effective_instructions(index)
         return snapshot
 
     # ------------------------------------------------------------ startup

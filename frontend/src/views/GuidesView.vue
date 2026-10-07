@@ -15,16 +15,19 @@ const {
   progress,
   busyIndex,
   batchBusy,
+  textSyncTokens,
   load,
   upload,
   uploadBatch,
-  saveInstructions,
+  saveTexts,
   remove,
   inferStageFromFilename,
 } = useGuides()
 
 /** Mirrors guides.instructions_max_length in the shipped YAML. */
 const INSTRUCTIONS_MAX_LENGTH = 500
+/** Mirrors guides.name_max_length in the shipped YAML. */
+const NAME_MAX_LENGTH = 60
 
 const cardErrors = ref(new Map<number, string>())
 const pageDragging = ref(false)
@@ -48,12 +51,24 @@ async function onCardPick(index: number, file: File) {
   }
 }
 
-async function onCardDescribe(index: number, text: string) {
+async function onCardSave(index: number, fields: { name?: string; instructions?: string }) {
+  await saveText(index, fields, 'saved')
+}
+
+async function onCardReset(index: number) {
+  await saveText(index, { name: '', instructions: '' }, 'reset')
+}
+
+async function saveText(
+  index: number,
+  fields: { name?: string; instructions?: string },
+  verb: 'saved' | 'reset',
+) {
   const next = new Map(cardErrors.value)
   next.delete(index)
   cardErrors.value = next
 
-  const result = await saveInstructions(index, text)
+  const result = await saveTexts(index, fields, verb)
   if (!result.ok && result.message) {
     const failed = new Map(cardErrors.value)
     failed.set(index, result.message)
@@ -133,8 +148,9 @@ async function onPageDrop(event: DragEvent) {
         <h1 class="display">Stage diagrams</h1>
         <p class="page-lede">
           One pose diagram per stage, shown as a reminder before each recording. Each stage also
-          carries the description the collector reads there. Both are stored on the host and reused
-          for every session, so this is a one time job.
+          carries the title and the description the collector reads there, edited together and saved
+          with one button. All three are stored on the host and reused for every session, so this is a
+          one time job.
         </p>
       </div>
 
@@ -156,8 +172,8 @@ async function onPageDrop(event: DragEvent) {
     </p>
     <p v-else class="wash wash--warn">
       {{ missingCount }} of {{ total }} diagrams still need an image. Drop one onto a card, or drop
-      several at once and name them <span class="mono">stage_01.png</span> and so on. Descriptions
-      can be written at any time, a stage does not need an image for that.
+      several at once and name them <span class="mono">stage_01.png</span> and so on. The title and
+      the description can be written at any time, a stage does not need an image for that.
     </p>
 
     <div class="grid">
@@ -170,8 +186,11 @@ async function onPageDrop(event: DragEvent) {
         :error="cardErrors.get(entry.index) ?? null"
         :highlight="!ready"
         :max-length="INSTRUCTIONS_MAX_LENGTH"
+        :name-max-length="NAME_MAX_LENGTH"
+        :sync-token="textSyncTokens.get(entry.index) ?? 0"
         @pick="(file) => onCardPick(entry.index, file)"
-        @describe="(text) => onCardDescribe(entry.index, text)"
+        @save="(fields) => onCardSave(entry.index, fields)"
+        @reset="onCardReset(entry.index)"
         @remove="onCardRemove(entry.index)"
       />
     </div>
@@ -179,8 +198,8 @@ async function onPageDrop(event: DragEvent) {
     <footer class="foot">
       <p class="foot__note">
         PNG is the expected format. JPEG, WebP, BMP and GIF work too, up to 10 MB each. Images wider
-        than 1600 px are rescaled for display, the original is kept as well. Clearing a description
-        restores the wording from the service configuration.
+        than 1600 px are rescaled for display, the original is kept as well. Reset clears both the
+        title and the description of a stage, back to the wording from the service configuration.
       </p>
       <AppButton variant="primary" size="lg" @click="$router.push({ name: 'home' })">
         {{ ready ? 'Back to home' : 'Save and return home' }}

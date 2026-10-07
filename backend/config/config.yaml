@@ -1,4 +1,4 @@
-# Service configuration.
+﻿# Service configuration.
 #
 # This file is the deployment time source of truth. Values the operator changes
 # from the web interface live in <paths.service_dir>/settings.json instead and
@@ -40,7 +40,7 @@ project:
   # means the home screen asks the operator to pick one on first run.
   default_root: ""
   # A project directory must have at least this much free space to be usable.
-  min_free_space_gb: 5
+  min_free_space_gb: 150
   require_writable: true
 
 fs:
@@ -67,6 +67,10 @@ guides:
   # Upper bound on the per-stage description the operator writes on the diagrams
   # screen. It overrides the stage instructions from this file.
   instructions_max_length: 500
+  # Upper bound on the per-stage title, which the same screen can also override.
+  # Shorter than the description because a title is rendered inline on the rail,
+  # the guide heading and the result cards.
+  name_max_length: 60
   # Originals wider than this get a downscaled copy for the guide screen.
   display_max_width: 1600
   recommended_aspect: "4:3"
@@ -128,32 +132,32 @@ stages:
   - index: 1
     name: "Front, level"
     instructions: "Hold the camera square to the subject at roughly 60 cm. Keep the subject centred and fill about two thirds of the frame. Hold still for the whole take."
-    max_duration_s: 30
+    max_duration_s: 300
   - index: 2
     name: "Front left, 45 degrees"
     instructions: "Orbit 45 degrees to the left, keeping height and distance unchanged. The subject should stay fully inside the frame."
-    max_duration_s: 30
+    max_duration_s: 300
   - index: 3
     name: "Front right, 45 degrees"
     instructions: "Orbit 45 degrees to the right from the starting position, keeping height and distance unchanged."
-    max_duration_s: 30
+    max_duration_s: 300
   - index: 4
     name: "Elevated, 30 degrees"
     instructions: "Raise the camera to look down on the subject by about 30 degrees. Keep the same 60 cm distance to the subject surface."
-    max_duration_s: 30
+    max_duration_s: 300
   - index: 5
     name: "Depressed, 30 degrees"
     instructions: "Lower the camera to look up at the subject by about 30 degrees. Watch for glare from overhead lighting and shade the lens if needed."
-    max_duration_s: 30
+    max_duration_s: 300
   - index: 6
     name: "Close range, 30 cm"
     instructions: "Move in to roughly 30 cm. This is close to the minimum working distance, so the frame will be tight. Avoid cropping the subject edges."
-    max_duration_s: 30
+    max_duration_s: 300
   - index: 7
     name: "Far range, 150 cm"
     instructions: "Withdraw to roughly 150 cm. Keep the subject centred and confirm the depth readout is still populated before you start."
-    max_duration_s: 30
+    max_duration_s: 300
   - index: 8
     name: "Orbit sweep"
     instructions: "While recording, orbit steadily around the subject through a full turn. Keep the subject centred and hold a constant angular speed. Aim for one complete revolution per take."
-    max_duration_s: 30
+    max_duration_s: 300

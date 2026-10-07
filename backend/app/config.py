@@ -88,6 +88,10 @@ class Config:
             or ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif"]
         )
         self.guide_instructions_max_length: int = int(guides.get("instructions_max_length", 500))
+        # Upper bound on the per-stage title the operator writes on the diagrams
+        # screen. Shorter than the description because a title is rendered inline
+        # on the rail, the guide heading and the result cards.
+        self.guide_name_max_length: int = int(guides.get("name_max_length", 60))
         self.guide_display_max_width: int = int(guides.get("display_max_width", 1600))
         self.guide_recommended_aspect: str = str(guides.get("recommended_aspect") or "4:3")
         # Draw the placeholder diagram set when the guide directory is still

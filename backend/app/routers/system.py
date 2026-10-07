@@ -83,6 +83,10 @@ def app_config(services: Services = Depends(get_services)) -> AppConfig:
         item = config.stage_config(index)
         if item is None:
             continue
+        # The effective values, not the shipped ones: a title or description
+        # written on the diagrams screen must show up on a guide screen opened
+        # before any session exists.
+        item["name"] = services.guides.effective_name(index)
         item["instructions"] = services.guides.effective_instructions(index)
         stages.append(StageConfig(**item))
     return AppConfig(

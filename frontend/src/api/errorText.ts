@@ -31,7 +31,7 @@ const EXPLANATIONS: Record<string, string> = {
   GUIDE_INVALID_IMAGE: 'That file could not be read as an image.',
   GUIDE_TOO_LARGE: 'That file is over the size limit.',
   GUIDE_UNSUPPORTED_TYPE: 'That image format is not accepted. Use PNG, JPEG, WebP, BMP or GIF.',
-  GUIDE_TEXT_TOO_LONG: 'That description is longer than the limit for this stage.',
+  GUIDE_TEXT_TOO_LONG: 'That text is longer than the limit for this stage.',
   REQUEST_INVALID: 'The service rejected the request. Check the values and try again.',
   NOT_IMPLEMENTED:
     'This part of the service is not built yet. It needs the camera or the session state machine.',

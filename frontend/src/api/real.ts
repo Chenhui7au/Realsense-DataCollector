@@ -71,11 +71,11 @@ export const backendApi: CaptureApi = {
     return request<GuideBatchResult>('/guides/batch', { method: 'POST', body: form })
   },
 
-  saveGuideInstructions: (index, instructions) =>
+  updateGuide: (index, body) =>
     request<GuideUpdateResult>(`/guides/${index}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instructions }),
+      body: JSON.stringify(body),
     }),
 
   deleteGuide: (index) => request<GuideDeleteResult>(`/guides/${index}`, { method: 'DELETE' }),
