@@ -38,6 +38,7 @@ const previewBusy = ref(false)
 const discardOpen = ref(false)
 const homeConfirmOpen = ref(false)
 const streamUrl = api.previewStreamUrl()
+const previewPane = ref<InstanceType<typeof PreviewPane> | null>(null)
 const { elapsed, remaining, start: startClock, resumeFrom, reset: resetClock } = useCountdown()
 
 const stage = computed(() => stageAt(props.index))
@@ -117,8 +118,18 @@ async function openPreview() {
   }
 }
 
+/*
+ * The preview is stopped at most once per visit. Relying on both this and the
+ * unload beacon meant two stops could land either side of the next screen's
+ * start, and the later one closed the pipeline the new screen had just opened.
+ * The collector then saw a frozen feed while the recording itself stayed healthy,
+ * because the camera writes the bag regardless of who is watching it.
+ */
+let previewStopped = false
+
 async function closePreview() {
-  if (!session.value) return
+  if (!session.value || previewStopped) return
+  previewStopped = true
   previewStatus.value = 'off'
   try {
     const result = await api.stopPreview(session.value.session_id)
@@ -153,10 +164,12 @@ onBeforeUnmount(() => {
   /*
    * sendBeacon survives the page unloading, which a plain fetch does not. The
    * service treats this route as idempotent and tolerates an empty body because of
-   * it; see docs/API.md section 6.6.
+   * it; see docs/API.md section 6.6. It is only needed when the screen is left
+   * without closePreview having run, so a visit never stops the pipeline twice.
    */
-  if (session.value) {
+  if (!previewStopped && session.value) {
     if (navigator.sendBeacon) {
+      previewStopped = true
       navigator.sendBeacon(`/api/sessions/${session.value.session_id}/preview/stop`)
     } else {
       void closePreview()
@@ -167,10 +180,23 @@ onBeforeUnmount(() => {
 
 /* --------------------------------------------------------------- actions */
 
+/**
+ * Rebuild the preview stream by hand. The MJPEG element reports a closed stream
+ * but not a silent freeze, so this covers the case where the pipeline was closed
+ * underneath us and the picture simply stopped moving.
+ */
+function reconnectPreview() {
+  previewPane.value?.retry()
+}
+
 async function onStart() {
   if (!session.value) return
   const sid = session.value.session_id
   stopPolling()
+  // The recorder is attached at pipeline start, so the feed goes down for about a
+  // second here. Cover it instead of letting the collector read a still frame as a
+  // hung camera.
+  previewBusy.value = true
   try {
     const result = await run('start', () => api.startRecord(sid, props.index))
     if (!result) return
@@ -181,6 +207,7 @@ async function onStart() {
     const { message } = describeError(error)
     toast.danger('Could not start recording', message)
   } finally {
+    previewBusy.value = false
     startPolling(sid)
   }
 }
@@ -189,6 +216,9 @@ async function onStop() {
   if (!session.value) return
   const sid = session.value.session_id
   stopPolling()
+  // Stopping closes the recording pipeline and reopens the preview one, so this is
+  // the same one second gap as a start.
+  previewBusy.value = true
   try {
     await run('stop', () => api.stopRecord(sid, props.index))
     await fetch(sid)
@@ -204,6 +234,7 @@ async function onStop() {
       toast.danger('Could not save the take', message)
     }
   } finally {
+    previewBusy.value = false
     startPolling(sid)
   }
 }
@@ -295,6 +326,7 @@ async function leaveForHome() {
     <div v-if="stage" class="cap">
       <div class="cap__view">
         <PreviewPane
+          ref="previewPane"
           :status="previewStatus"
           :stream-url="streamUrl"
           :overlay-visible="overlayVisible"
@@ -366,6 +398,19 @@ async function leaveForHome() {
         />
 
         <p class="cap__hint">{{ statusHint }}</p>
+
+        <!--
+          A freeze the browser never reported would otherwise force the collector
+          to leave and re-enter the stage to get the feed back.
+        -->
+        <AppButton
+          v-if="previewStatus === 'live'"
+          variant="ghost"
+          size="sm"
+          @click="reconnectPreview"
+        >
+          Reconnect preview
+        </AppButton>
 
         <figure v-if="artifact" class="thumb">
           <img :src="artifact.thumbnail_url" alt="Last frame of the saved take" />

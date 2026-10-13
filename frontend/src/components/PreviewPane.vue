@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import AppButton from './AppButton.vue'
 import BlockingOverlay from './BlockingOverlay.vue'
 
 const props = withDefaults(
@@ -17,21 +18,88 @@ const props = withDefaults(
   },
 )
 
+/*
+ * The MJPEG response is a single long lived connection, so the only way to start
+ * a new one is to hand the element a different address. ``attempt`` is that
+ * address change; the service ignores the parameter, and the browser cannot
+ * satisfy the new URL from the stream that just ended.
+ *
+ * This matters because a closed stream leaves the last frame on screen, which
+ * reads as a hung camera. The service also ends a stream that has had no frames
+ * for fifteen seconds, so a pipeline that was closed underneath the collector
+ * turns into a frozen picture rather than an error the browser would report.
+ */
+const attempt = ref(0)
+const retryCount = ref(0)
 const streamFailed = ref(false)
+let retryTimer: number | null = null
+
+// Enough attempts to ride out a pipeline restart, few enough that a genuinely
+// dead camera stops being retried and says so.
+const MAX_AUTO_RETRIES = 5
+
+const src = computed(() =>
+  props.status === 'live' && !streamFailed.value
+    ? `${props.streamUrl}${props.streamUrl.includes('?') ? '&' : '?'}v=${attempt.value}`
+    : '',
+)
+
+function clearRetryTimer(): void {
+  if (retryTimer !== null) {
+    window.clearTimeout(retryTimer)
+    retryTimer = null
+  }
+}
+
+/** The first frame arriving is the only proof the stream is healthy again. */
+function onStreamLoad(): void {
+  clearRetryTimer()
+  retryCount.value = 0
+}
+
+function onStreamError(): void {
+  if (props.status !== 'live') {
+    return
+  }
+  if (retryCount.value >= MAX_AUTO_RETRIES) {
+    streamFailed.value = true
+    return
+  }
+  retryCount.value += 1
+  clearRetryTimer()
+  retryTimer = window.setTimeout(() => {
+    attempt.value += 1
+  }, 800)
+}
+
+/** Rebuild the stream on demand, for a freeze the browser never reported. */
+function retry(): void {
+  clearRetryTimer()
+  retryCount.value = 0
+  streamFailed.value = false
+  attempt.value += 1
+}
 
 /*
- * A fresh stream clears the previous failure. Without this the fallback would
- * stick after the camera recovered, because the element is unmounted on error and
- * the browser never gets a second chance at the same src.
+ * A fresh pipeline gets a fresh address and a fresh retry budget. Without this a
+ * failure recorded against the old stream would stick after the camera recovered,
+ * because the element would never be offered a new src.
  */
 watch(
   () => props.status,
   (status) => {
     if (status === 'live') {
+      clearRetryTimer()
+      retryCount.value = 0
       streamFailed.value = false
+      attempt.value += 1
     }
   },
 )
+
+onBeforeUnmount(clearRetryTimer)
+
+defineExpose({ retry })
 </script>
 
 <template>
@@ -41,13 +109,15 @@ watch(
       <img
         v-if="!streamFailed"
         class="pane__layer"
-        :src="streamUrl"
+        :src="src"
         alt="Live camera preview"
-        @error="streamFailed = true"
+        @load="onStreamLoad"
+        @error="onStreamError"
       />
       <div v-else class="pane__fallback">
         <p class="pane__fallback-title">Preview stream interrupted</p>
-        <p class="pane__fallback-body">The camera may be reconfiguring. This usually resolves itself.</p>
+        <p class="pane__fallback-body">The feed stopped while the camera was reconfiguring.</p>
+        <AppButton variant="ghost" size="sm" @click="retry">Reconnect</AppButton>
       </div>
 
       <slot name="hud" />
