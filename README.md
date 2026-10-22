@@ -13,6 +13,7 @@
 | Python | 3.12 或以上 |
 | 采集主机 | Windows 10 或以上 |
 | 相机 | D435i |
+| 麦克风 | 可选。D435i 没有麦克风，音频来自采集主机的任意输入设备 |
 
 ---
 
@@ -47,6 +48,16 @@ npm --prefix frontend install
 | `stages_count` | 一轮的阶段数 | `8`，可填 1 到 10 |
 | `camera.recording.min_duration_s` | 低于该时长的录制会被丢弃，秒 | `1` |
 | `stages[].max_duration_s` | 单个阶段的最长录制时长，秒 | `300` |
+| `audio.enabled` | 是否同时录一路音频，见下 | `true` |
+| `audio.required` | 没有音频时是否阻止开始录制 | `false` |
+
+### 音频
+
+每个阶段除了 `capture.db3` 还会写一个 `audio.wav`。它不在 bag 里：D435i 没有麦克风，SDK 也没有音频流，所以音频来自采集主机的输入设备，与视频是两个文件。两者的时间关系记在 `stage_XX/meta.json` 的 `audio.sync.offset_ms` 里，正数表示音频更晚。
+
+默认 `audio.required: false`，也就是麦克风有问题时照常录像，只是这一条没有音频。主页的 Microphone 卡片上有 Test microphone，点开后打开麦克风并显示实时电平表，说话时指针会跟着动，按 Stop test 关掉设备并给出这一段的判定；这是发现"设备打开了但收到静音"的唯一办法。把 `required` 改成 `true` 就变成硬门槛，没有音频不能开始。
+
+音频依赖 `sounddevice`，`pip install -r backend\requirements.txt` 会一并装上。用不到音频时把 `audio.enabled` 改成 `false` 即可，服务不会碰任何音频设备。
 
 ### 启动后端
 

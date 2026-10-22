@@ -103,6 +103,8 @@ def write_config(
             },
         },
         "storage": {"compress_bag": False, "keep_finished_sessions": True},
+        # Off in the suite so no test opens a real input device.
+        "audio": {"enabled": False},
         "stages": stage_list,
     }
     if guides_overrides:
@@ -315,7 +317,25 @@ def test_project_object_matches_the_documented_field_set(client):
 def test_health_project_matches_the_documented_field_set(client):
     body = client.get("/api/health").json()
     assert set(body["project"]) == PROJECT_FIELDS
-    assert set(body) == {"status", "device", "project", "guides", "active_session"}
+    assert set(body) == {
+        "status",
+        "device",
+        "project",
+        "guides",
+        "audio",
+        "active_session",
+    }
+    # Audio is present even when it is switched off, so the screens can explain
+    # why instead of hiding the panel.
+    assert set(body["audio"]) == {
+        "enabled",
+        "required",
+        "available",
+        "device",
+        "reason",
+        "samplerate",
+        "channels",
+    }
 
 
 def test_health_device_matches_the_documented_field_set(client):

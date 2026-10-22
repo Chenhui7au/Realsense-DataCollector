@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from . import __version__
+from .audio import AudioWorker
 from .camera import CameraWorker
 from .capture import CaptureService
 from .config import Config
@@ -71,6 +73,10 @@ class Services:
             config,
             backend_factory=None if config.camera_probe else _NoCameraBackend,
         )
+        # The audio sidecar has its own device and its own thread, so it needs no
+        # sharing with the camera. It is built even when disabled, where it answers
+        # every call with "switched off" and never touches PortAudio.
+        self.audio = AudioWorker(config)
         self.capture = CaptureService(
             config=config,
             sessions=self.sessions,
@@ -78,6 +84,7 @@ class Services:
             guides=self.guides,
             device=self.device,
             camera=self.camera,
+            audio=self.audio,
         )
 
     # -------------------------------------------------------------- startup
@@ -124,6 +131,24 @@ class Services:
             readiness["total"],
             "" if readiness["ready"] else f", missing {readiness['missing_indices']}",
         )
+
+        if self.config.audio_enabled:
+            audio = self.audio.probe(force=True)
+            if audio["available"]:
+                log.info(
+                    "audio input %s at %d Hz",
+                    audio.get("device"),
+                    self.config.audio_samplerate,
+                )
+            elif self.config.audio_required:
+                log.error("audio input unavailable: %s", audio.get("reason"))
+            else:
+                log.warning(
+                    "audio input unavailable, takes will have no audio: %s",
+                    audio.get("reason"),
+                )
+        else:
+            log.info("audio capture disabled")
 
         # Last, so an earlier failure does not leave a thread holding the camera.
         self.capture.bootstrap()

@@ -60,6 +60,17 @@ export function useApp() {
   const deviceReady = computed(() => health.value?.device.connected === true)
   const guidesReady = computed(() => health.value?.guides.ready === true)
 
+  /**
+   * Audio is the only optional input. It is a problem worth showing but not one
+   * that blocks a round unless `audio.required` is on.
+   */
+  const audio = computed(() => health.value?.audio ?? null)
+  const audioEnabled = computed(() => audio.value?.enabled === true)
+  const audioAvailable = computed(() => audio.value?.available === true)
+  const audioBlocking = computed(
+    () => audioEnabled.value && audio.value?.required === true && !audioAvailable.value,
+  )
+
   const project = computed<ProjectInfo | null>(() => health.value?.project ?? null)
   const projectReady = computed(() => {
     const p = project.value
@@ -72,7 +83,7 @@ export function useApp() {
 
   /** Everything that has to be true before a session may be started. */
   const canStartSession = computed(
-    () => deviceReady.value && guidesReady.value && projectReady.value,
+    () => deviceReady.value && guidesReady.value && projectReady.value && !audioBlocking.value,
   )
 
   const blockers = computed(() => {
@@ -105,6 +116,18 @@ export function useApp() {
         : `${h?.guides.uploaded ?? 0} of ${h?.guides.total ?? 8} uploaded`,
       met: h?.guides.ready === true,
     })
+
+    // Only listed when it can actually block. Audio that is missing but optional
+    // is reported on its own card instead, because a blocked round would be a
+    // disproportionate response to a sidecar the dataset can live without.
+    if (audioBlocking.value) {
+      list.push({
+        key: 'audio',
+        label: 'Microphone available',
+        detail: audio.value?.reason ?? 'The microphone could not be opened',
+        met: false,
+      })
+    }
 
     return list
   })
@@ -148,6 +171,10 @@ export function useApp() {
     totalStages,
     deviceReady,
     guidesReady,
+    audio,
+    audioEnabled,
+    audioAvailable,
+    audioBlocking,
     project,
     projectReady,
     activeSession,

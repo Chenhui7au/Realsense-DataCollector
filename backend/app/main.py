@@ -124,11 +124,11 @@ def create_app(config_path: Optional[str | os.PathLike] = None) -> FastAPI:
 
 
 def _mount_routers(app: FastAPI) -> None:
-    from .routers import fs, guides, preview, project, sessions, system
+    from .routers import audio, fs, guides, preview, project, sessions, system
 
     # Order matters only in that a literal path must precede a parameterised
     # sibling of the same shape; each module handles its own case.
-    for module in (system, project, fs, guides, sessions, preview):
+    for module in (system, project, fs, guides, audio, sessions, preview):
         app.include_router(module.router, prefix="/api")
 
 

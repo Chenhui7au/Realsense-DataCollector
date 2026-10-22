@@ -35,6 +35,30 @@ const totals = computed(() => {
   return { bytes, seconds }
 })
 
+/*
+ * Audio is optional, so the summary has to say how many takes actually carry it.
+ * Otherwise a round recorded with a dead microphone looks complete, which is the
+ * one failure this sidecar can hide.
+ */
+const audioCoverage = computed(() => {
+  const withAudio = recorded.value.filter((s) => s.artifact?.audio)
+  return {
+    total: recorded.value.length,
+    withAudio: withAudio.length,
+    missing: recorded.value.length - withAudio.length,
+    partial: withAudio.filter((s) => s.artifact?.audio?.partial).length,
+    /*
+     * A file that exists but carries no signal. The capture screen warns during
+     * the take; this is the summary for whoever sorts the data afterwards, and it
+     * is the only place a silent take can still be caught before archiving.
+     */
+    silent: withAudio.filter((s) => {
+      const peak = s.artifact?.audio?.peak_dbfs
+      return peak === null || peak === undefined || peak <= -60
+    }).length,
+  }
+})
+
 const complete = computed(() => savedCount.value === totalStages.value)
 
 onMounted(() => {
@@ -146,6 +170,22 @@ async function copyPath() {
         <dd class="mono-lg summary__stamp">{{ formatDateTime(session?.finished_at) }}</dd>
       </div>
     </dl>
+
+    <p
+      v-if="audioCoverage.total > 0 && audioCoverage.missing > 0"
+      class="wash wash--warn"
+    >
+      {{ audioCoverage.missing }} of {{ audioCoverage.total }} takes have no audio.
+      The bag files are complete; only the sidecar WAV is missing.
+    </p>
+    <p v-else-if="audioCoverage.partial > 0" class="wash wash--warn">
+      {{ audioCoverage.partial }} take{{ audioCoverage.partial === 1 ? '' : 's' }} ended audio
+      early. The bag files are complete; check meta.json for the reason.
+    </p>
+    <p v-else-if="audioCoverage.silent > 0" class="wash wash--warn">
+      {{ audioCoverage.silent }} take{{ audioCoverage.silent === 1 ? '' : 's' }} recorded
+      audio with no signal. The files are there, but check the microphone before archiving.
+    </p>
 
     <section class="files">
       <div class="files__bar">

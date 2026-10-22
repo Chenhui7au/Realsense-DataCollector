@@ -18,9 +18,36 @@ export interface StageArtifact {
   streams: string[]
   frame_counts: Record<string, number>
   thumbnail_url: string
+  /** Sidecar WAV, not a camera stream: kept out of `streams` on purpose. */
+  audio: AudioArtifact | null
 }
 
 export type StageVerdict = 'passed' | 'failed'
+
+/**
+ * One take's audio. Null when the take recorded video only, which is a normal
+ * outcome because audio is the sidecar rather than the dataset.
+ */
+export interface AudioArtifact {
+  file: string
+  device: string
+  samplerate: number
+  channels: number
+  sample_format: string
+  duration_s: number
+  size_bytes: number
+  /** True when the device failed mid take; the audio stops early but is kept. */
+  partial: boolean
+  overruns: number
+  /** Peak level of the whole take, for spotting a silent recording after the fact. */
+  peak_dbfs: number | null
+  sync: {
+    /** Positive when the audio starts later than the video. */
+    offset_ms: number
+    method: string
+    estimated_error_ms: number
+  }
+}
 
 /**
  * The operator's verdict on a take, written on the capture screen.
@@ -125,7 +152,86 @@ export interface Health {
   device: DeviceInfo
   project: ProjectInfo
   guides: GuidesReadiness
+  audio: AudioStatus
   active_session: SessionSummary | null
+}
+
+/**
+ * Whether the configured input can be opened. Present even when audio is
+ * switched off, so the screens can say why rather than hiding the panel.
+ */
+export interface AudioStatus {
+  enabled: boolean
+  required: boolean
+  available: boolean
+  device: string | null
+  /** Why it is unavailable, null when it is fine. */
+  reason: string | null
+  samplerate: number | null
+  channels: number | null
+}
+
+/** Live view while a take runs, polled by the capture screen only. */
+export interface AudioLive {
+  enabled: boolean
+  required: boolean
+  available: boolean
+  capturing: boolean
+  device: string | null
+  samplerate: number | null
+  channels: number | null
+  duration_s: number
+  /** Peak of the most recent block, 0..1. Zero while the input is silent. */
+  level: number
+  /**
+   * The same peak in dBFS, null while the block is silent. The meters draw from
+   * this: a linear ratio parks ordinary speech near zero and looks like failure.
+   */
+  level_dbfs: number | null
+  /** True once any block since the take started rose above the noise floor. */
+  heard: boolean
+  overruns: number
+  error: string | null
+  reason: string | null
+}
+
+/**
+ * Live view of the home screen's input check, polled while it runs.
+ *
+ * `level_dbfs` is what the meter draws. Amplitude would leave normal speech
+ * pinned near the bottom of the bar, because full scale is well above a
+ * comfortable speaking level.
+ */
+export interface AudioTestLive {
+  running: boolean
+  device: string | null
+  samplerate: number | null
+  channels: number | null
+  duration_s: number
+  /** Peak of the most recent block, 0..1. */
+  level: number
+  /** The same peak in dBFS, null while the block is silent. */
+  level_dbfs: number | null
+  /** Loudest block since the check started. */
+  peak: number
+  peak_dbfs: number | null
+  heard: boolean
+  overruns: number
+  error: string | null
+}
+
+export interface AudioTestResult {
+  device: string
+  samplerate: number
+  channels: number
+  duration_s: number
+  overruns: number
+  peak: number
+  peak_dbfs: number | null
+  /** `silent` means the device opened but delivered digital silence. */
+  verdict: 'silent' | 'quiet' | 'ok' | 'clipping'
+  /** Set when the device failed mid check, rather than the check hearing nothing. */
+  error: string | null
 }
 
 export interface StageConfig {
@@ -153,6 +259,14 @@ export interface AppConfig {
     bytes_per_second: number
   }
   stages: StageConfig[]
+  audio: {
+    enabled: boolean
+    required: boolean
+    samplerate: number
+    channels: number
+    /** On disk name of the sidecar, from the service. */
+    output_name: string
+  }
 }
 
 export interface GuideEntry {
@@ -384,4 +498,18 @@ export interface CaptureApi {
   /** Marks a saved take passed or failed. Required before `advance`. */
   saveReview(sid: string, index: number, body: StageReviewBody): Promise<ReviewResult>
   advance(sid: string, index: number): Promise<AdvanceResult>
+
+  /**
+   * Whether the audio input can be opened. Cached on the host, so `refresh`
+   * asks the device again after someone plugs a microphone in.
+   */
+  audioStatus(refresh?: boolean): Promise<AudioStatus>
+  /** Live audio level, polled only while a take is running. */
+  audioLive(): Promise<AudioLive>
+  /** Opens the input and keeps it open so the meter can move. Nothing is written. */
+  audioTestStart(): Promise<AudioTestLive>
+  /** Live level of the running check. Polling it is also the heartbeat. */
+  audioTestStatus(): Promise<AudioTestLive>
+  /** Closes the input and reports what it heard while it was open. */
+  audioTestStop(): Promise<AudioTestResult>
 }

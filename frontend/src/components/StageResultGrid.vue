@@ -46,8 +46,7 @@ const rows = computed<Row[]>(() =>
               :class="`rcard__verdict--${row.stage.review.verdict}`"
             >
               {{ row.stage.review.verdict }}
-            </span>
-          </span>
+            </span>          </span>
         </div>
         <h3 class="rcard__name">{{ row.stage.name }}</h3>
 
@@ -63,6 +62,16 @@ const rows = computed<Row[]>(() =>
           <div>
             <dt>Started</dt>
             <dd class="mono">{{ formatDateTime(row.stage.artifact?.started_at) }}</dd>
+          </div>
+          <div v-if="row.recorded">
+            <dt>Audio</dt>
+            <dd class="mono">
+              {{
+                row.stage.artifact?.audio
+                  ? `${Math.round((row.stage.artifact.audio.samplerate / 1000) * 10) / 10} kHz ${row.stage.artifact.audio.channels === 1 ? 'mono' : 'stereo'}${row.stage.artifact.audio.partial ? ' (partial)' : ''}`
+                  : 'none'
+              }}
+            </dd>
           </div>
         </dl>
 

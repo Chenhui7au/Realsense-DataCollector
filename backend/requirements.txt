@@ -35,3 +35,11 @@ python-multipart>=0.0.9
 #   pip install pyrealsense2-macosx
 #
 pyrealsense2>=2.55
+
+# Audio sidecar capture. Shipped as py3-none-win_amd64, so it works on the
+# Python 3.14 interpreter this project runs on; PyAudio has no 3.14 wheel and would
+# need a source build with MSVC and PortAudio. sounddevice bundles the PortAudio
+# DLL, and RawInputStream gives raw int16 blocks, so numpy is not needed either.
+# Only imported by app.audio, and only when audio.enabled is true, so the service
+# and the whole test suite run without it.
+sounddevice>=0.5

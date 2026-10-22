@@ -88,3 +88,24 @@ export function stageStateLabel(state: StageState): string {
 export function stageNumber(index: number): string {
   return `Stage ${String(index).padStart(2, '0')}`
 }
+
+/** Bottom of the input meter, in dBFS. Below this the bar is empty. */
+export const LEVEL_FLOOR_DB = -60
+
+/**
+ * dBFS to the 0..100 reading the microphone meter shows.
+ *
+ * The signal is logarithmic, so the scale here is too: -60 dBFS reads 0 and
+ * 0 dBFS reads 100, putting ordinary speech (roughly -30 dBFS) at 50. A linear
+ * amplitude reading would park speech around 3 and make the bar look dead.
+ *
+ * Negative dBFS is correct but reads as an error to anyone who does not work with
+ * audio, which is why the screen shows this instead of the raw level.
+ */
+export function levelFromDbfs(dbfs: number | null | undefined): number {
+  if (dbfs === null || dbfs === undefined || !Number.isFinite(dbfs)) {
+    return 0
+  }
+  const clamped = Math.min(0, Math.max(LEVEL_FLOOR_DB, dbfs))
+  return Math.round(((clamped - LEVEL_FLOOR_DB) / -LEVEL_FLOOR_DB) * 100)
+}

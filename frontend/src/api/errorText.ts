@@ -18,6 +18,15 @@ const EXPLANATIONS: Record<string, string> = {
   STAGE_NOT_RECORDING: 'This stage is not recording, so there is nothing to stop.',
   REVIEW_REQUIRED: 'Mark this take Passed or Failed before moving on.',
   REVIEW_NOTE_TOO_LONG: 'That comment is longer than the limit. Shorten it and try again.',
+  AUDIO_DISABLED: 'Audio capture is switched off in the configuration.',
+  AUDIO_DEVICE_NOT_FOUND:
+    'No microphone was detected. Plug one in, or record without audio by leaving required off.',
+  AUDIO_DEVICE_BUSY:
+    'Another program is holding the microphone. Close it, or run the input test on the home screen.',
+  AUDIO_UNAVAILABLE:
+    'The microphone cannot be opened with the configured sample rate. Check the audio section of the configuration.',
+  AUDIO_RECORD_FAILED:
+    'The microphone stopped during the take. The video was kept and the stage is marked as having partial audio.',
   RECORDING_TOO_SHORT: 'That take was too short and has been discarded. Record for longer.',
   DISK_SPACE_LOW: 'Not enough free disk space to record. Clear some space on the host.',
   CAMERA_ERROR: 'The camera reported an error. Check the connection and try again.',

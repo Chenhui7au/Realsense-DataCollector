@@ -54,6 +54,9 @@ RECORD_DIR_NAME = "recovered"
 BAG_NAME = "capture.db3"
 META_NAME = "meta.json"
 THUMB_NAME = "thumb.jpg"
+# Sidecar audio for the same take. It cannot live inside the bag: the D435I has
+# no microphone and the SDK exposes no audio stream.
+AUDIO_NAME = "audio.wav"
 
 SESSION_SCHEMA_VERSION = 1
 
@@ -302,6 +305,10 @@ class SessionStore:
             "frame_counts": artifact.get("frame_counts", {}),
             "note": stage.get("note", ""),
             "review": normalize_review(stage.get("review")),
+            # Absent when the take has no audio, which is a normal outcome when
+            # audio.required is false. Kept next to the take it describes so a
+            # consumer reading only this file still knows how to align it.
+            "audio": artifact.get("audio"),
         }
         directory = Path(session["data_dir"]) / stage_dir_name(index)
         directory.mkdir(parents=True, exist_ok=True)
@@ -530,6 +537,7 @@ class SessionStore:
             return None, empty_review()
 
         thumb = stage_dir / THUMB_NAME
+        audio = meta.get("audio")
         artifact = {
             "bag_path": os.path.join(stage_dir_name(index), BAG_NAME),
             "size_bytes": int(meta.get("size_bytes") or size),
@@ -544,6 +552,13 @@ class SessionStore:
                 if thumb.is_file()
                 else None
             ),
+            # Only report audio that is still on disk. A hand deleted wav must not
+            # keep being advertised by an old meta.json.
+            "audio": (
+                audio
+                if isinstance(audio, dict) and (stage_dir / AUDIO_NAME).is_file()
+                else None
+            ),
         }
         return artifact, normalize_review(meta.get("review"))
 
@@ -551,7 +566,7 @@ class SessionStore:
         """Move a truncated bag out of the way so the stage can be re-recorded."""
         stage_dir = directory / stage_dir_name(index)
         moved: List[str] = []
-        for name in (BAG_NAME, META_NAME, THUMB_NAME):
+        for name in (BAG_NAME, AUDIO_NAME, META_NAME, THUMB_NAME):
             source = stage_dir / name
             if not source.is_file():
                 continue
@@ -608,10 +623,10 @@ class SessionStore:
         return data_dir
 
     def remove_stage_files(self, session: Dict[str, Any], index: int) -> List[str]:
-        """Delete a stage's bag, metadata and thumbnail. Missing files are fine."""
+        """Delete a stage's bag, audio, metadata and thumbnail. Missing files are fine."""
         stage_dir = Path(session["data_dir"]) / stage_dir_name(index)
         deleted: List[str] = []
-        for name in (BAG_NAME, META_NAME, THUMB_NAME):
+        for name in (BAG_NAME, AUDIO_NAME, META_NAME, THUMB_NAME):
             target = stage_dir / name
             try:
                 if target.is_file():

@@ -47,6 +47,36 @@ class GuidesReadiness(BaseModel):
     missing_indices: List[int] = Field(default_factory=list)
 
 
+class AudioSync(BaseModel):
+    """How the sidecar WAV relates to the video, in one place.
+
+    ``offset_ms`` is positive when the audio starts later than the video. The
+    audio is deliberately started first so the take is covered from its first
+    frame, so the value is usually negative by the camera's start latency and the
+    WAV is correspondingly longer at the head.
+    """
+
+    offset_ms: int
+    method: str = "monotonic_anchor"
+    estimated_error_ms: int = 120
+
+
+class AudioArtifact(BaseModel):
+    """One take's audio. Absent entirely when the take has no audio."""
+
+    file: str
+    device: str
+    samplerate: int
+    channels: int
+    sample_format: str = "pcm_s16le"
+    duration_s: float
+    size_bytes: int
+    partial: bool = False
+    overruns: int = 0
+    peak_dbfs: Optional[float] = None
+    sync: AudioSync
+
+
 class StageArtifact(BaseModel):
     bag_path: str
     size_bytes: int
@@ -56,6 +86,9 @@ class StageArtifact(BaseModel):
     streams: List[str] = Field(default_factory=list)
     frame_counts: Dict[str, int] = Field(default_factory=dict)
     thumbnail_url: str
+    # A sidecar WAV, not a camera stream. Kept out of ``streams`` on purpose:
+    # that list is one entry per recorded device stream with a frame count each.
+    audio: Optional[AudioArtifact] = None
 
 
 class StageReview(BaseModel):
@@ -197,11 +230,93 @@ class ReviewResult(BaseModel):
 
 # ---------------------------------------------------------------------- health
 
+class AudioStatus(BaseModel):
+    """Audio readiness. Present even when capture is disabled, so the screens can
+    explain why instead of hiding the panel."""
+
+    enabled: bool = False
+    required: bool = False
+    available: bool = False
+    device: Optional[str] = None
+    reason: Optional[str] = None
+    samplerate: Optional[int] = None
+    channels: Optional[int] = None
+
+
+class AudioLive(BaseModel):
+    """Live view while a take is running, polled by the capture screen only."""
+
+    enabled: bool = False
+    required: bool = False
+    available: bool = False
+    capturing: bool = False
+    device: Optional[str] = None
+    samplerate: Optional[int] = None
+    channels: Optional[int] = None
+    duration_s: float = 0.0
+    # Peak of the most recent block, 0..1, for the "is it actually hearing
+    # anything" banner. Not a stream, so it cannot lag the audio.
+    level: float = 0.0
+    # The same peak in dBFS. Null while the block is silent, which is why the
+    # screens draw the meter from this rather than from `level`.
+    level_dbfs: Optional[float] = None
+    # True once any block since the take started rose above the noise floor.
+    heard: bool = False
+    overruns: int = 0
+    error: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class AudioTestLive(BaseModel):
+    """Live view of the home screen's input check, polled while it runs.
+
+    ``level_dbfs`` is what the meter draws: a linear amplitude would leave speech
+    near the bottom of the bar, because full scale is not a comfortable listening
+    level in the first place.
+    """
+
+    running: bool = False
+    device: Optional[str] = None
+    samplerate: Optional[int] = None
+    channels: Optional[int] = None
+    duration_s: float = 0.0
+    # Peak of the most recent block, 0..1.
+    level: float = 0.0
+    # The same peak in dBFS, null while the block is silent.
+    level_dbfs: Optional[float] = None
+    # Loudest block since the check started, so a level that only moves briefly
+    # is still reported when the check stops.
+    peak: int = 0
+    peak_dbfs: Optional[float] = None
+    heard: bool = False
+    overruns: int = 0
+    error: Optional[str] = None
+
+
+class AudioTestResult(BaseModel):
+    """What the input check heard between start and stop."""
+
+    device: str
+    samplerate: int
+    channels: int
+    duration_s: float
+    overruns: int = 0
+    peak: int
+    peak_dbfs: Optional[float] = None
+    # silent, quiet, ok or clipping. silent means the device opened but delivered
+    # digital silence, which is the failure that looks like success everywhere else.
+    verdict: Literal["silent", "quiet", "ok", "clipping"]
+    # Set when the device failed during the check rather than the check finding
+    # nothing, so the screen can tell the two apart.
+    error: Optional[str] = None
+
+
 class Health(BaseModel):
     status: Literal["ok", "degraded"]
     device: DeviceInfo
     project: ProjectInfo
     guides: GuidesReadiness
+    audio: AudioStatus = Field(default_factory=AudioStatus)
     active_session: Optional[SessionSummary] = None
 
 
@@ -232,11 +347,24 @@ class StageConfig(BaseModel):
     max_duration_s: float
 
 
+class AudioConfig(BaseModel):
+    """What the pre-session screens need to know about audio."""
+
+    enabled: bool = False
+    required: bool = False
+    samplerate: int = 48000
+    channels: int = 1
+    # The sidecar name, so a screen can describe the output before a take exists,
+    # for the same reason ``recording.output_name`` exists.
+    output_name: str = "audio.wav"
+
+
 class AppConfig(BaseModel):
     app_title: str
     total_stages: int
     preview: PreviewConfig
     recording: RecordingConfig
+    audio: AudioConfig = Field(default_factory=AudioConfig)
     stages: List[StageConfig] = Field(default_factory=list)
 
 

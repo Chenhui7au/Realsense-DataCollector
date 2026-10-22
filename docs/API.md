@@ -49,6 +49,11 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 | `STAGE_NOT_CURRENT` | 409 | 只能推进或评价当前阶段，该阶段不是当前阶段 |
 | `REVIEW_REQUIRED` | 409 | 该阶段还没有 passed 或 failed 结论，不能推进 |
 | `REVIEW_NOTE_TOO_LONG` | 400 | 反馈评论超过长度上限 |
+| `AUDIO_DISABLED` | 409 | 配置里关闭了音频采集 |
+| `AUDIO_DEVICE_NOT_FOUND` | 503 | 没有可用的音频输入设备 |
+| `AUDIO_DEVICE_BUSY` | 409 | 音频输入被其他程序占用，或正在录制 |
+| `AUDIO_UNAVAILABLE` | 503 | 设备无法按配置的采样率或声道数打开 |
+| `AUDIO_RECORD_FAILED` | 500 | 录制过程中音频设备报错 |
 | `PROJECT_NOT_CONFIGURED` | 409 | 尚未设置项目目录，无法创建会话 |
 | `PROJECT_PATH_INVALID` | 400 | 项目目录路径不合法，例如不是绝对路径或含上级目录 |
 | `PROJECT_PATH_NOT_WRITABLE` | 403 | 项目目录不可写或无法创建 |
@@ -79,8 +84,20 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | 健康检查，含设备、项目目录、示意图就绪状态与进行中的会话 |
+| GET | `/api/health` | 健康检查，含设备、项目目录、示意图与音频就绪状态，以及进行中的会话 |
 | GET | `/api/config` | 读取阶段配置 |
+
+### 2.1.1 音频
+
+音频是每个阶段的一个旁挂文件，不属于相机流，也不参与会话状态机。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/audio/status` | 音频输入能否打开，用于主页卡片 |
+| GET | `/api/audio` | 录制中的实时状态与峰值，采集页每秒轮询 |
+| POST | `/api/audio/test` | 打开输入设备并保持打开，用于主页的电平表 |
+| GET | `/api/audio/test` | 电平表实时读数，兼作心跳 |
+| POST | `/api/audio/test/stop` | 关闭设备并报告这次检查听到的最响电平 |
 
 ### 2.2 项目目录
 
@@ -273,8 +290,55 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 | `streams` | string[] | 本次录制包含的流，与 YAML 的录制配置一致 |
 | `frame_counts` | object | 各流的帧数统计，用于快速判断是否丢帧 |
 | `thumbnail_url` | string | 缩略图地址，取自录制期最后一帧 |
+| `audio` | object\|null | 旁挂音频结果，结构见 3.3.1；没有音频时为 `null` |
 
 `streams` 与 `frame_counts` 是刻意保留的。采集完成后若发现某一路帧数明显偏低，可以直接判定为 USB 带宽或设备异常，不需要重新打开 bag 逐帧检查。
+
+`audio` 不并入 `streams`。那个数组每一项都对应一路被录进 bag 的相机流，并且与 `frame_counts` 一一对应；音频既不在 bag 里，也没有帧计数的概念，混进去会让下游按流遍历的代码出错。
+
+### 3.3.1 音频结果
+
+`audio.wav` 与 `capture.db3` 并排存放，是同一个阶段的同一份数据。它无法放进 bag：D435I 没有麦克风，SDK 也没有音频流。
+
+```json
+{
+  "file": "audio.wav",
+  "device": "Microphone (USB Audio Device)",
+  "samplerate": 48000,
+  "channels": 1,
+  "sample_format": "pcm_s16le",
+  "duration_s": 13.82,
+  "size_bytes": 1326764,
+  "partial": false,
+  "overruns": 0,
+  "peak_dbfs": -12.2,
+  "sync": {
+    "offset_ms": -312,
+    "method": "monotonic_anchor",
+    "estimated_error_ms": 70
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `file` | string | 文件名，固定 `audio.wav`，与 bag 同目录 |
+| `device` | string | 实际使用的设备名 |
+| `samplerate` | int | 采样率，不做重采样 |
+| `channels` | int | 声道数 |
+| `sample_format` | string | 固定 `pcm_s16le` |
+| `duration_s` | float | 实际写入的时长，按样本数换算 |
+| `size_bytes` | int | 文件体积 |
+| `partial` | bool | 设备中途失败，音频提前结束但文件保留 |
+| `overruns` | int | 缓冲欠载次数 |
+| `peak_dbfs` | float\|null | 整段峰值，全静音时为 `null` |
+| `sync.offset_ms` | int | 音频起点减去视频首帧起点，正数表示音频更晚 |
+| `sync.method` | string | 对齐方法，当前固定 `monotonic_anchor` |
+| `sync.estimated_error_ms` | int | 该偏移的估计误差上界 |
+
+**`duration_s` 通常比视频时长略长。** 音频在录制开始前就打开，这样视频首帧不会缺音频开头；多出来的是打开 pipeline 到出第一帧的那段时间，长度随机器在几百毫秒到两秒之间浮动。取用时按 `offset_ms` 定位视频起点，头部多余的部分忽略即可。尾部不是这样：音频在视频结束的同一刻就停，多出来的只有设备缓冲区周期。
+
+**偏移方向必须按上面的定义理解。** `offset_ms` 为负表示音频先开始，这是常态。方向写反是这类字段最常见的下游错误，因此这里写死而不是留给实现选择。
 
 ### 3.4 示意图条目
 
@@ -673,6 +737,149 @@ stateDiagram-v2
 
 名称规则与会话名称共用一套，这一点是刻意对齐的。在选择器里能建出来的目录，一定可以直接用作会话名，不会出现能建但建完却不能用的尴尬情况。
 
+### 4.7 音频就绪状态
+
+`GET /api/audio/status`
+
+返回配置的音频输入能否打开。与会话无关，任何时候都可调用。结果在服务端缓存，供主页轮询；插上麦克风后带 `refresh=true` 再问一次设备。
+
+```json
+{
+  "enabled": true,
+  "required": false,
+  "available": true,
+  "device": "Microphone (USB Audio Device)",
+  "reason": null,
+  "samplerate": 48000,
+  "channels": 1
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `enabled` | bool | 配置里 `audio.enabled` 的取值 |
+| `required` | bool | 配置里 `audio.required` 的取值 |
+| `available` | bool | 设备能否以当前采样率与声道数打开 |
+| `device` | string\|null | 设备名，不可用时为 `null` |
+| `reason` | string\|null | 不可用的原因，可用时为 `null` |
+| `samplerate` | int\|null | 配置的采样率 |
+| `channels` | int\|null | 配置的声道数 |
+
+音频关闭时也返回 200，`enabled` 为 `false`，`reason` 说明是配置关掉的，这样界面可以解释原因而不是把整块藏起来。
+
+`required` 为 `true` 且 `available` 为 `false` 时，`/api/health` 的 `status` 会是 `degraded`，主页的阻断列表会多一项。`required` 为 `false` 时不阻断，只在自己的卡片上提示。
+
+### 4.8 音频实时状态
+
+`GET /api/audio`
+
+录制期间由采集页轮询，用于画电平表与判断麦克风是否真的收到了声音。建议 100 到 200 毫秒一次；电平表要跟着说话声动才可信，一秒一次只能看到一堆无关的跳动。
+
+```json
+{
+  "enabled": true,
+  "required": false,
+  "available": true,
+  "capturing": true,
+  "device": "Microphone (USB Audio Device)",
+  "samplerate": 48000,
+  "channels": 1,
+  "duration_s": 12.4,
+  "level": 0.244,
+  "level_dbfs": -12.2,
+  "heard": true,
+  "overruns": 0,
+  "error": null,
+  "reason": null
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `capturing` | bool | 当前是否正在写本阶段的 wav |
+| `duration_s` | float | 已写入的音频时长，按样本数换算 |
+| `level` | float | 最近一个数据块的峰值，归一到 0 到 1 |
+| `level_dbfs` | float\|null | 同一峰值的 dBFS 读法，静音时为 `null`。采集页与主页的电平表都用它，线性值会把正常说话画成贴底 |
+| `heard` | bool | 本次录制开始后是否出现过高于数字静音门的信号 |
+| `overruns` | int | 缓冲欠载次数，大于零表示样本有丢失 |
+| `error` | string\|null | 设备中途出错的原因 |
+
+`heard` 回答的是"设备是不是在送数据"，不是"声音够不够大"。门槛为负 60 dBFS，与自测判定 `silent` 用的是同一条线：送零值的设备落在线上方，正常麦克风只听自己的底噪也在线上方。判断音量是否合适由 `level_dbfs` 与自测的 `quiet` 判定负责。
+
+这条线早先是手工定的负 44 dBFS，比笔记本麦克风阵列的底噪（约负 56 dBFS）还高，结果整条 take 都报"没有声音"而文件其实是好的。
+
+`level` 只反映最近十毫秒，正常说话时的停顿会让它归零，所以界面不能靠它判断死活。`heard` 一旦为真就保持为真，只有重新开始录制才清零。
+
+### 4.9 音频输入检查
+
+这一组接口对应主页麦克风卡片上的 Test microphone。三步：开始、轮询、停止。开着设备是为了让电平表真的会动，采集员自己看电平和说话声对得上，比读一个数字更直接。
+
+**开始**
+
+`POST /api/audio/test`
+
+打开输入设备并保持打开，返回当前状态。重复按不会打开第二个流，已经在跑时直接返回同一个检查。
+
+```json
+{
+  "running": true,
+  "device": "麦克风阵列 (Realtek(R) Audio)",
+  "samplerate": 48000,
+  "channels": 1,
+  "duration_s": 0.0,
+  "level": 0.0,
+  "level_dbfs": null,
+  "peak": 0,
+  "peak_dbfs": null,
+  "heard": false,
+  "overruns": 0,
+  "error": null
+}
+```
+
+**轮询**
+
+`GET /api/audio/test`
+
+返回同一个结构，`level` 与 `level_dbfs` 是最近一个数据块的峰值。建议 100 毫秒左右一次。
+
+`level` 是线性的 0 到 1，`level_dbfs` 是同一峰值的对数读法。界面显示的是由后者换算出的 0 到 100，换算规则见 `docs/FRONTEND.md` 的 5.1 节：线性值直接画成进度条会贴底，而负数又会让人以为是故障。
+
+`running` 变成 `false` 有两种原因：设备中途出错，此时 `error` 有值；或者界面已经有一阵没来轮询。
+
+轮询同时是心跳。服务端在 `TEST_LINGER_S`（默认 15 秒）内没有收到轮询就自己关掉设备，这样关掉的标签页不会一直占着麦克风；检查本身也有一条 `TEST_MAX_S`（默认 300 秒）的兜底上限。
+
+**停止**
+
+`POST /api/audio/test/stop`
+
+关闭设备，按整段检查里最响的一个数据块给出判定。重复调用返回空结果而不是报错，因为界面在卸载时会无条件下发这个请求。
+
+```json
+{
+  "device": "麦克风阵列 (Realtek(R) Audio)",
+  "samplerate": 48000,
+  "channels": 1,
+  "duration_s": 7.4,
+  "overruns": 0,
+  "peak": 21000,
+  "peak_dbfs": -3.9,
+  "verdict": "ok",
+  "error": null
+}
+```
+
+| `verdict` | 含义 |
+| --- | --- |
+| `silent` | 设备打开了，但收到的是数字静音，`peak` 为零 |
+| `quiet` | 峰值低于负 30 dBFS，需要用更大的声音或更高增益 |
+| `ok` | 峰值在负 30 与负 1 dBFS 之间 |
+| `clipping` | 峰值高于负 1 dBFS，已经或即将削波 |
+
+这组接口存在的理由只有一个：设备打开成功但收到静音，在其他所有视图里和正常工作完全一样。`required` 为 `false` 时它是唯一能在录制前发现这个问题的手段。
+
+正在录制时调用开始接口返回 409 与 `AUDIO_DEVICE_BUSY`，配置关闭音频时返回 409 与 `AUDIO_DISABLED`。反过来，检查进行中开始录制不会被拒绝：检查不落任何数据，录制开始时直接把检查关掉，麦克风交给录制。
+
 ---
 
 ## 5. 示意图接口
@@ -1070,9 +1277,10 @@ Content-Type: image/jpeg
 1. 校验会话未结束，已结束则 409 与 `SESSION_FINISHED`
 2. 校验阶段状态为 `idle`
 3. 校验磁盘剩余空间，不足则 507 与 `DISK_SPACE_LOW`
-4. 停止预览 pipeline，检查无残留句柄
-5. 按录制配置启动 pipeline，并挂上录制文件。启动失败则 500 与 `CAMERA_ERROR`
-6. 阶段状态置为 `recording`，记录开始时间
+4. 打开音频输入并开始写 `audio.wav`。配置关闭音频时跳过；`audio.required` 为 `false` 时打不开只记告警并继续；为 `true` 时直接返回 503 或 409，不创建任何文件
+5. 停止预览 pipeline，检查无残留句柄
+6. 按录制配置启动 pipeline，并挂上录制文件。启动失败则 500 与 `CAMERA_ERROR`，同时关闭已打开的音频
+7. 阶段状态置为 `recording`，记录开始时间
 
 响应 200
 
@@ -1100,11 +1308,12 @@ Content-Type: image/jpeg
 
 1. 阶段状态为 `saved` 时直接返回已有的 `artifact`，不做任何改动
 2. 校验阶段状态为 `recording`，否则 409 与 `STAGE_NOT_RECORDING`
-3. 停止 pipeline，SDK 在此刻 flush 并关闭 bag 文件
-4. 读取文件大小与时长，写入 `meta.json`
-5. 抓取录制期最后一帧存为缩略图
-6. 阶段状态置为 `saved`
-7. 按预览配置重启 pipeline，恢复预览
+3. 打桩记录 take 结束时刻，随即回调通知音频停止，然后才关闭 pipeline。SDK 在关闭时 flush 并写完 bag，这一步要一到四秒
+4. join 音频线程并关闭 wav。尾部只剩设备缓冲区周期
+5. 读取文件大小与时长，写入 `meta.json`
+6. 抓取录制期最后一帧存为缩略图
+7. 阶段状态置为 `saved`
+8. 按预览配置重启 pipeline，恢复预览
 
 第 1 条是这个接口幂等的地方，它是刻意设计的，也是最容易被实现成不幂等的一处。
 
@@ -1344,11 +1553,13 @@ Content-Type: image/jpeg
 | 清单的 `version` 低于当前版本 | 执行迁移并写回 |
 | 设置文件里的项目目录不存在 | 创建它，失败则标记为不可用并保留原值 |
 | 设置文件存在但内容损坏 | 记告警，回退到 YAML 的初始值，不阻止服务启动 |
-| 会话目录里的某个阶段处于 `recording` | 把它标回 `idle`，半截 bag 移到同目录下的 `recovered/` 并记告警 |
+| 会话目录里的某个阶段处于 `recording` | 把它标回 `idle`，半截 bag、音频与元数据移到同目录下的 `recovered/` 并记告警 |
 
 最后一行对应服务被强杀的情况。进程在录制途中被杀，`session.json` 里留下的还是 `recording`，但 bag 文件已经被截断，SDK 没有机会 flush 收尾。
 
 处理方式是不尝试修复，也不直接删除。把它标回 `idle` 让采集员能重录这一条，半截文件改名移进 `recovered/` 子目录保留着。理由有两个。一是截断的 bag 可能仍然可读，也许能救出前半段，直接删掉就没了。二是它不进 `stage_XX/` 就不会被后续流程当成正常产物，也不会被 `discard` 连带删掉，需要人工确认后再处理。
+
+音频文件走同一条路径，一起移进 `recovered/`。进程在录制中被杀掉时 `wave` 头还没有回填，这样的 wav 通常打不开；保留它是为了让人确认当时录到了多久，而不是当作可用数据。
 
 这一套自检保证了持久化的可靠性。即使有人误删了某一张图，也不会导致整个清单损坏，只是该阶段回到未配置，其余阶段照常可用。
 
@@ -1376,6 +1587,8 @@ Content-Type: image/jpeg
 
 会话状态的权威来源是内存中的状态机，`session.json` 是它的持久化镜像。服务重启时扫描项目目录恢复未完成会话，保证刷新和重启都不丢数据。
 
+音频是每阶段一个旁挂文件，不是 bag 的一部分。仓库里携带 `audio.wav` 与 `capture.db3` 并排，两者靠 `meta.json` 里的 `sync.offset_ms` 建立时间关系，因此拷走整个会话目录即可，不需要额外导出。
+
 两处目录的分工如下。服务目录存放服务自己的东西，项目目录只存放采集数据。
 
 ```text
@@ -1396,10 +1609,12 @@ Content-Type: image/jpeg
     session.log
     stage_01/
       capture.db3
+      audio.wav
       meta.json
       thumb.jpg
     stage_08/
       capture.db3
+      audio.wav
       meta.json
       thumb.jpg
   session_b/
@@ -1450,7 +1665,7 @@ Content-Type: image/jpeg
 
 目录名可能会被人在文件系统里手工改掉，这会使它与 `session.json` 里的 `name` 不一致。服务以磁盘上的目录名作为权威，启动时若发现不一致则修正记录并记告警，而不是拒绝加载。采集员手工整理目录是合理行为，不应该因此让数据不可读。
 
-`stage_XX/meta.json` 记录单阶段结果。除了录制结果，还包括采集员在采集页上留下的结论与评论，因此一份数据集拷走之后，每条数据是不是合格不需要再回头查别的地方。
+`stage_XX/meta.json` 记录单阶段结果。除了录制结果，还包括采集员在采集页上留下的结论与评论，以及旁挂音频的描述，因此一份数据集拷走之后，每条数据是不是合格、音频从哪里对齐，都不需要再回头查别的地方。没有音频时 `audio` 为 `null`。
 
 ```json
 {
@@ -1471,6 +1686,19 @@ Content-Type: image/jpeg
     "verdict": "passed",
     "comment": "slight glare on the left edge",
     "reviewed_at": "2026-09-20T14:31:20+08:00"
+  },
+  "audio": {
+    "file": "audio.wav",
+    "device": "Microphone (USB Audio Device)",
+    "samplerate": 48000,
+    "channels": 1,
+    "sample_format": "pcm_s16le",
+    "duration_s": 13.82,
+    "size_bytes": 1326764,
+    "partial": false,
+    "overruns": 0,
+    "peak_dbfs": -12.2,
+    "sync": { "offset_ms": -312, "method": "monotonic_anchor", "estimated_error_ms": 70 }
   }
 }
 ```
@@ -1488,7 +1716,8 @@ Content-Type: image/jpeg
 | 模块 | 职责 |
 | --- | --- |
 | `api` | 路由定义、请求校验、错误体封装 |
-| `CaptureService` | 会话与阶段状态机、命令编排、单例保护、录制结论的落盘 |
+| `CaptureService` | 会话与阶段状态机、命令编排、单例保护、录制结论与音频描述的落盘 |
+| `AudioWorker` | 独立线程持有音频输入设备，按块写 WAV，检测欠载并报告中途故障 |
 | `CameraWorker` | 独占 pipeline 的采集线程，编码 JPEG，管理录制文件 |
 | `ProjectStore` | 项目目录的设置读写、路径校验、可写性与空间探测 |
 | `FsBrowser` | 目录枚举、路径规范化、新建目录，只服务选择器 |

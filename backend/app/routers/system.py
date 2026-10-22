@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, Request
 
 from ..models import (
     AppConfig,
+    AudioConfig,
+    AudioStatus,
     GuideEntry,
     GuidesReadiness,
     Health,
@@ -16,7 +18,7 @@ from ..models import (
     StageConfig,
 )
 from ..services import Services
-from ..sessions import BAG_NAME
+from ..sessions import AUDIO_NAME, BAG_NAME
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ def health(services: Services = Depends(get_services)) -> Health:
     device = services.device.info()
     project = services.project.info()
     readiness = services.guides.readiness()
+    audio = services.audio.probe()
 
     project_usable = bool(
         project["configured"]
@@ -47,8 +50,16 @@ def health(services: Services = Depends(get_services)) -> Health:
     )
     # When guides are not required, missing diagrams must not degrade the status.
     guides_ok = bool(readiness["ready"] or not readiness["required"])
+    # Audio is the only optional input. A missing device only degrades the status
+    # when audio.required is true; otherwise the screens report it and a round can
+    # still run, which is the whole point of the default.
+    audio_ok = bool(not audio.get("required") or audio.get("available"))
 
-    status = "ok" if (device["connected"] and project_usable and guides_ok) else "degraded"
+    status = (
+        "ok"
+        if (device["connected"] and project_usable and guides_ok and audio_ok)
+        else "degraded"
+    )
 
     return Health(
         status=status,
@@ -59,6 +70,15 @@ def health(services: Services = Depends(get_services)) -> Health:
             uploaded=readiness["uploaded"],
             total=readiness["total"],
             missing_indices=readiness["missing_indices"],
+        ),
+        audio=AudioStatus(
+            enabled=bool(audio.get("enabled")),
+            required=bool(audio.get("required")),
+            available=bool(audio.get("available")),
+            device=audio.get("device"),
+            reason=audio.get("reason"),
+            samplerate=audio.get("samplerate"),
+            channels=audio.get("channels"),
         ),
         # Session recovery, per docs/API.md section 4.1. The frontend uses this to
         # reattach to a round that is already running instead of offering to start
@@ -98,6 +118,13 @@ def app_config(services: Services = Depends(get_services)) -> AppConfig:
             max_duration_s_default=config.max_duration_default_s,
             output_name=BAG_NAME,
             bytes_per_second=config.recording_bytes_per_s,
+        ),
+        audio=AudioConfig(
+            enabled=config.audio_enabled,
+            required=config.audio_required,
+            samplerate=config.audio_samplerate,
+            channels=config.audio_channels,
+            output_name=AUDIO_NAME,
         ),
         stages=stages,
     )

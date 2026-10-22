@@ -2,6 +2,10 @@ import { request, jsonBody, ApiError } from './error'
 import type {
   AdvanceResult,
   AppConfig,
+  AudioLive,
+  AudioStatus,
+  AudioTestLive,
+  AudioTestResult,
   CaptureApi,
   DiscardRecordResult,
   FsCreateResult,
@@ -117,6 +121,17 @@ export const backendApi: CaptureApi = {
 
   advance: (sid, index) =>
     request<AdvanceResult>(`/sessions/${sid}/stages/${index}/advance`, jsonBody({})),
+
+  audioStatus: (refresh = false) =>
+    request<AudioStatus>(`/audio/status${refresh ? '?refresh=true' : ''}`),
+
+  audioLive: () => request<AudioLive>('/audio'),
+
+  audioTestStart: () => request<AudioTestLive>('/audio/test', jsonBody({})),
+
+  audioTestStatus: () => request<AudioTestLive>('/audio/test'),
+
+  audioTestStop: () => request<AudioTestResult>('/audio/test/stop', jsonBody({})),
 }
 
 export { ApiError }

@@ -131,6 +131,31 @@ storage:
   # When false a finished round is deleted as soon as it completes.
   keep_finished_sessions: true
 
+# Audio is written as a sidecar audio.wav next to capture.db3, one per stage. It
+# can never go inside the bag: the D435I has no microphone and pyrealsense2
+# exposes no audio stream or format. See docs/DESIGN.md section 6.7.
+audio:
+  # Off means the service never touches an audio device, and every stage records
+  # video only. Turning it on adds one file per stage and one offset in meta.json.
+  enabled: true
+  # false: a device that will not open is reported on the screens but does not
+  # block a round, because the video is the primary data and a microphone problem
+  # on the rig is usually not fixable on the spot. true: refuse to start a take,
+  # the same way a missing camera does.
+  required: false
+  # Empty means the system default input. A name or an index both work; a name
+  # survives a reboot, an index does not.
+  device: ""
+  # Forced, never resampled. A silent resample would change both the file
+  # duration and the offset recorded in meta.json.
+  samplerate: 48000
+  channels: 1
+  # The only format this service writes.
+  sample_format: pcm_s16le
+  # Read block, in frames. 480 at 48 kHz is 10 ms, which is also the granularity
+  # of the audio/video anchor.
+  block_frames: 480
+
 review:
   # After a take is saved the capture screen asks the operator to mark it passed
   # or failed before the round can move on, and offers a free text comment. This

@@ -44,7 +44,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
-
 from PIL import Image
 
 from .config import Config
@@ -466,6 +465,16 @@ class CameraWorker:
         # here instead.
         self._record_started_at: Optional[float] = None
         self._record_stopped_at: Optional[float] = None
+        # Host monotonic stamp of the first frameset received after a recording
+        # pipeline opened. The audio anchor is measured against this rather than
+        # against the pipeline open time, because opening takes 50-300 ms and that
+        # latency would otherwise land in the audio offset.
+        self._first_frame_mono: Optional[float] = None
+
+        # Called on the worker thread the instant a take is stamped, before the
+        # pipeline close that finalises the bag. The audio sidecar hangs off this,
+        # so it stops with the picture rather than with the file.
+        self._on_take_end: Optional[Callable[[], None]] = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -589,7 +598,7 @@ class CameraWorker:
         self._apply(plan)
         self._arm_auto_stop(limit_s)
 
-    def stop_recording(self) -> Dict[str, int]:
+    def stop_recording(self, on_take_end: Optional[Callable[[], None]] = None) -> Dict[str, int]:
         """Close the recording pipeline and return the per stream frame counts.
 
         Restoring the preview is deliberately left to the caller. The stop is the
@@ -597,10 +606,20 @@ class CameraWorker:
         preview pipeline restarts, otherwise the one second restart would be
         counted as part of the recording and a short take could look long enough
         to pass the minimum duration check.
+
+        ``on_take_end`` runs on the worker thread at the instant the take is
+        stamped, before the pipeline is closed. Closing a multi gigabyte bag takes
+        seconds, and anything that should stop with the picture rather than with
+        the file has to be told here: stopping it from the caller, before or after
+        this call, is either seconds early or seconds late.
         """
         self._cancel_auto_stop()
         if self._recording:
-            self._apply(None)
+            self._on_take_end = on_take_end
+            try:
+                self._apply(None)
+            finally:
+                self._on_take_end = None
         return dict(self._frame_counts)
 
     def stop(self) -> None:
@@ -638,6 +657,21 @@ class CameraWorker:
             return 0.0
         end = self._record_stopped_at if self._record_stopped_at is not None else time.monotonic()
         return max(0.0, end - self._record_started_at)
+
+    def recording_span(self) -> Tuple[Optional[float], Optional[float]]:
+        """Host monotonic bounds of the last take, for the audio offset.
+
+        The start is the first frame received, not the moment the pipeline opened.
+        Those differ by 50-300 ms, which is the same order as the audio tolerance,
+        so using the open time would spend the error budget on a known quantity.
+
+        Falls back to the open time when no frame ever arrived, which keeps the
+        offset meaningful for a take that produced no video.
+        """
+        return (
+            self._first_frame_mono or self._record_started_at,
+            self._record_stopped_at,
+        )
 
     def take_thumbnail(self) -> Optional[bytes]:
         """Newest recorded image frame, so a take gets a poster frame."""
@@ -718,6 +752,8 @@ class CameraWorker:
         self._thumbnail_stream = None
         self._last_error = None
         self._last_frame_at = time.monotonic()
+        self._first_frame_mono = None
+        self._on_take_end = None
         if plan.recording:
             self._record_started_at = time.monotonic()
             self._record_stopped_at = None
@@ -737,6 +773,15 @@ class CameraWorker:
             # flushes the bag. Stamped here so the caller cannot accidentally
             # include the following preview restart.
             self._record_stopped_at = time.monotonic()
+            # Anything recording alongside the picture is told now, at the take
+            # end, not when `backend.close()` finally returns. The callback only
+            # signals a stop; the join happens in the caller.
+            callback, self._on_take_end = self._on_take_end, None
+            if callback is not None:
+                try:
+                    callback()
+                except Exception:  # noqa: BLE001 - a sidecar must not break the stop
+                    log.exception("the take end callback failed")
         if backend is not None:
             backend.close()
 
@@ -798,6 +843,10 @@ class CameraWorker:
             return
 
         self._last_frame_at = time.monotonic()
+        if self._recording and self._first_frame_mono is None and frames.frames:
+            # First frameset after the recorder was attached. Stamped before the
+            # per frame work so it is not pushed later by encoding.
+            self._first_frame_mono = self._last_frame_at
         for frame in frames.frames:
             if self._recording:
                 self._frame_counts[frame.stream] = self._frame_counts.get(frame.stream, 0) + 1

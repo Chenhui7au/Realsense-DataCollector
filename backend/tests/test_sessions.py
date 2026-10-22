@@ -65,6 +65,10 @@ class FakeBackend:
     opened: list = []
     fail_on_open: str | None = None
     stall: bool = False
+    # Seconds `close` pretends to spend finalising the bag. A real take spends
+    # one to four seconds here, and that window is what used to be recorded into
+    # the WAV because the audio worker was still reading.
+    close_delay: float = 0.0
 
     def __init__(self, serial: str = "") -> None:
         self.serial = serial
@@ -81,6 +85,8 @@ class FakeBackend:
         FakeBackend.opened.append(plan)
 
     def close(self) -> None:
+        if FakeBackend.close_delay:
+            time.sleep(FakeBackend.close_delay)
         self.closed = True
         self.plan = None
 
@@ -132,6 +138,7 @@ def write_config(
     allow_roots=None,
     guides_required: bool = False,
     seed_defaults: bool = False,
+    audio=None,
 ) -> Path:
     library = base / "library"
     library.mkdir(parents=True, exist_ok=True)
@@ -181,6 +188,9 @@ def write_config(
             },
         },
         "storage": {"compress_bag": False, "keep_finished_sessions": True},
+        # Audio is off unless a test asks for it, so the suite never opens a real
+        # input device.
+        "audio": audio if audio is not None else {"enabled": False},
         "stages": [
             {
                 "index": index,
@@ -201,10 +211,12 @@ def _reset_fake():
     FakeBackend.opened = []
     FakeBackend.fail_on_open = None
     FakeBackend.stall = False
+    FakeBackend.close_delay = 0.0
     yield
     FakeBackend.opened = []
     FakeBackend.fail_on_open = None
     FakeBackend.stall = False
+    FakeBackend.close_delay = 0.0
 
 
 @pytest.fixture()

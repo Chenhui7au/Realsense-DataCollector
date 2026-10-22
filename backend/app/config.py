@@ -50,6 +50,9 @@ FORMAT_BYTES_PER_PIXEL = {
 # motion_xyz32f is three 32 bit floats.
 MOTION_SAMPLE_BYTES = 12
 
+# 16 bit signed little endian, the only audio format the service writes.
+SAMPLE_WIDTH_BYTES = 2
+
 
 class Config:
     """Parsed configuration with the defaults filled in."""
@@ -128,12 +131,28 @@ class Config:
         )
         self.colorize_depth: bool = bool(recording.get("colorize_depth", False))
         self.recording_streams: Dict[str, Any] = dict(recording.get("streams") or {})
-        self.recording_bytes_per_s: int = self._estimate_record_rate()
 
         review = raw.get("review") or {}
         # Upper bound on the free text an operator attaches to a take on the
         # capture screen. The verdict itself is fixed to passed or failed.
         self.review_comment_max_length: int = int(review.get("comment_max_length", 500))
+
+        audio = raw.get("audio") or {}
+        # Audio is a sidecar WAV, never part of the bag: the D435I has no
+        # microphone and the SDK exposes no audio stream. Off by default in code
+        # so a host without an input stays quiet; the shipped YAML turns it on.
+        self.audio_enabled: bool = bool(audio.get("enabled", False))
+        # When true, a device that will not open stops a round from starting.
+        # When false the take is still recorded and the screens say it has no audio.
+        self.audio_required: bool = bool(audio.get("required", False))
+        self.audio_device: str = str(audio.get("device") or "").strip()
+        self.audio_samplerate: int = int(audio.get("samplerate", 48000))
+        self.audio_channels: int = int(audio.get("channels", 1))
+        self.audio_sample_format: str = str(audio.get("sample_format") or "pcm_s16le").strip().lower()
+        self.audio_block_frames: int = int(audio.get("block_frames", 480))
+
+        # After the audio block, because the gauge has to include the sidecar.
+        self.recording_bytes_per_s: int = self._estimate_record_rate()
 
         storage = raw.get("storage") or {}
         self.compress_bag: bool = bool(storage.get("compress_bag", False))
@@ -190,6 +209,11 @@ class Config:
             height = float(spec.get("height") or 0)
             pixel = FORMAT_BYTES_PER_PIXEL.get(str(spec.get("format") or "").lower(), 2)
             total += width * height * pixel * fps
+        # A sidecar WAV is written for the same span as the video, so the gauge on
+        # the capture screen has to count it or it quietly understates disk use.
+        # Small next to 76 MB/s of video, but the number exists to be trusted.
+        if self.audio_enabled:
+            total += float(self.audio_samplerate * self.audio_channels * SAMPLE_WIDTH_BYTES)
         return int(round(total))
 
     @staticmethod
@@ -256,6 +280,27 @@ class Config:
         if self.max_duration_default_s < self.min_duration_s:
             raise ConfigError(
                 "camera.recording.max_duration_s must not be below min_duration_s"
+            )
+        self._validate_audio()
+
+    def _validate_audio(self) -> None:
+        if self.audio_sample_format != "pcm_s16le":
+            raise ConfigError(
+                "audio.sample_format must be pcm_s16le, got "
+                f"{self.audio_sample_format!r}; other formats need a conversion step "
+                "that would change the duration"
+            )
+        if self.audio_channels not in (1, 2):
+            raise ConfigError(
+                f"audio.channels must be 1 or 2, got {self.audio_channels}"
+            )
+        if self.audio_samplerate < 8000:
+            raise ConfigError(
+                f"audio.samplerate must be at least 8000, got {self.audio_samplerate}"
+            )
+        if self.audio_block_frames < 1:
+            raise ConfigError(
+                f"audio.block_frames must be positive, got {self.audio_block_frames}"
             )
 
     # -------------------------------------------------------------- stages

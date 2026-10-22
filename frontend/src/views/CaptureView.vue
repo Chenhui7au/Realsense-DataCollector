@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api'
+import type { AudioLive } from '@/api'
 import AppButton from '@/components/AppButton.vue'
 import CaptureControls from '@/components/CaptureControls.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -14,7 +15,7 @@ import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { describeError } from '@/api/errorText'
 import { locationForSession } from '@/utils/flow'
-import { formatBytes, formatClock, formatSeconds, formatDateTime } from '@/utils/format'
+import { formatBytes, formatClock, formatSeconds, formatDateTime, levelFromDbfs, LEVEL_FLOOR_DB } from '@/utils/format'
 
 const props = defineProps<{ index: number }>()
 
@@ -42,6 +43,75 @@ const streamUrl = api.previewStreamUrl()
 const previewPane = ref<InstanceType<typeof PreviewPane> | null>(null)
 const reviewRef = ref<InstanceType<typeof StageReview> | null>(null)
 const { elapsed, remaining, start: startClock, resumeFrom, reset: resetClock } = useCountdown()
+
+/*
+ * Live audio state, polled while a take runs. Two rates on purpose: a fast poll
+ * for the level meter, which has to move with the voice to be believable, and the
+ * same call feeding the banner below. Access logging is already suppressed for
+ * these routes, so the extra requests cost nothing but a few microseconds of I/O.
+ */
+const AUDIO_POLL_MS = 120
+const audioLive = ref<AudioLive | null>(null)
+/** Peak hold in dBFS, falling slowly, so a short word stays visible. */
+const audioHoldDb = ref(LEVEL_FLOOR_DB)
+let audioTimer: number | null = null
+/** Guards against piling up requests if one poll is slow to answer. */
+let audioInFlight = false
+
+async function pollAudio(): Promise<void> {
+  if (audioInFlight) {
+    return
+  }
+  audioInFlight = true
+  try {
+    const live = await api.audioLive()
+    audioLive.value = live
+    audioHoldDb.value = Math.max(live.level_dbfs ?? LEVEL_FLOOR_DB, audioHoldDb.value - 2)
+  } catch {
+    // A failed poll must not disturb the screen. The banner simply keeps its
+    // previous state until the next tick.
+  } finally {
+    audioInFlight = false
+  }
+}
+
+function startAudioPoll(): void {
+  stopAudioPoll()
+  audioHoldDb.value = LEVEL_FLOOR_DB
+  void pollAudio()
+  audioTimer = window.setInterval(() => void pollAudio(), AUDIO_POLL_MS)
+}
+
+function stopAudioPoll(): void {
+  if (audioTimer !== null) {
+    window.clearInterval(audioTimer)
+    audioTimer = null
+  }
+}
+
+/*
+ * The meter beside REC. Same 0..100 reading as the home screen's input check, from
+ * the same helper, so the two surfaces cannot disagree about what "level 40" means.
+ */
+const audioLevel = computed(() => levelFromDbfs(audioLive.value?.level_dbfs))
+const audioHoldLevel = computed(() => levelFromDbfs(audioHoldDb.value))
+const audioClipping = computed(() => (audioLive.value?.level_dbfs ?? LEVEL_FLOOR_DB) >= -1)
+/** What the meter says in words, for the rail and for readers of the HUD. */
+const audioMeterText = computed(() => {
+  const live = audioLive.value
+  if (audioStopping.value) return 'closing'
+  if (!live) return 'starting'
+  if (live.error) return 'stopped'
+  if (!live.capturing) return 'no audio'
+  // The number, always, because a number that moves is the only thing that
+  // actually shows the microphone is working. The old wording replaced it with
+  // "no sound yet" whenever the device had not been heard, and since that test
+  // was set too high the rail sat on those three words for whole takes while the
+  // WAV was fine.
+  const level = `level ${audioLevel.value}`
+  if (!live.heard) return `${level} · silent`
+  return level
+})
 
 const stage = computed(() => stageAt(props.index))
 const stageConfig = computed(() => config.value?.stages.find((s) => s.index === props.index) ?? null)
@@ -73,6 +143,104 @@ const maxDuration = computed(
 const isLastStage = computed(() => props.index >= totalStages.value)
 const recording = computed(() => stage.value?.state === 'recording')
 const artifact = computed(() => stage.value?.artifact ?? null)
+
+/**
+ * Whether the HUD shows a meter at all. Only while a take is running and audio
+ * capture is switched on.
+ *
+ * Deliberately not gated on the first poll reporting `capturing`: that arrives a
+ * beat after the take starts, and a meter that pops into existence makes the
+ * collector wonder what just changed. It is dimmed until audio is confirmed
+ * instead, so the rail and the HUD agree from the first frame.
+ */
+const audioMeterVisible = computed(
+  () => recording.value && Boolean(config.value?.audio.enabled),
+)
+/** True once the service reports the microphone is actually being written. */
+const audioMeterActive = computed(() => audioLive.value?.capturing === true)
+/**
+ * A stop is in flight. The audio worker closes before the video pipeline does, so
+ * for a moment `capturing` is false while the stage still reads `recording`. That
+ * is the stop working, not a failure, and it must not flash a red warning now
+ * that the meter polls eight times a second instead of once.
+ */
+const audioStopping = computed(() => busyAction.value === 'stop')
+/**
+ * Nothing has reached the microphone. Waits three seconds, the same grace the
+ * banner below gives, so the first moment of a normal take does not turn the rail
+ * amber before the collector has said anything.
+ */
+const audioSilent = computed(() => {
+  const live = audioLive.value
+  if (!live || !live.capturing || audioStopping.value) return false
+  return !live.heard && live.duration_s >= 3
+})
+
+/**
+ * The one line about audio that must not be missed.
+ *
+ * A message that disappears is not enough here: the dangerous case is a
+ * microphone that opened and delivers silence, which every other view reports as
+ * success. So this stays on screen for the whole take and, for a saved take,
+ * keeps saying the file has no audio.
+ */
+const audioNotice = computed<{ tone: 'warn' | 'danger'; text: string } | null>(() => {
+  const live = audioLive.value
+
+  if (recording.value) {
+    if (!config.value?.audio.enabled) {
+      return null
+    }
+    // The audio worker closes before the video pipeline, so during a stop the
+    // take briefly reports no capture. Warning about it would cry wolf on every
+    // single take.
+    if (audioStopping.value) {
+      return null
+    }
+    if (!live) {
+      return null
+    }
+    if (live.error) {
+      return { tone: 'danger', text: `Audio stopped: ${live.error}` }
+    }
+    if (!live.capturing) {
+      return {
+        tone: 'danger',
+        text: 'Recording video without audio. This take will have no sound.',
+      }
+    }
+    // Three seconds of take time before complaining, so the first moment of a
+    // normal take does not flash a warning at the collector.
+    if (!live.heard && live.duration_s >= 3) {
+      return {
+        tone: 'warn',
+        text: 'The microphone is open but delivering silence. Check the input device and the Windows microphone privacy setting.',
+      }
+    }
+    return null
+  }
+
+  if (artifact.value) {
+    const audio = artifact.value.audio
+    if (!audio) {
+      return { tone: 'warn', text: 'This take has no audio. The bag file is complete.' }
+    }
+    if (audio.partial) {
+      return {
+        tone: 'danger',
+        text: `Audio ended early at ${formatSeconds(audio.duration_s)}. The bag file is complete.`,
+      }
+    }
+    if (audio.overruns > 0) {
+      return {
+        tone: 'warn',
+        text: `The microphone dropped ${audio.overruns} buffer${audio.overruns === 1 ? '' : 's'}; the audio runs slightly short of the video.`,
+      }
+    }
+  }
+
+  return null
+})
 
 const position = computed(
   () => `Stage ${String(props.index).padStart(2, '0')} / ${String(totalStages.value).padStart(2, '0')}`,
@@ -160,6 +328,8 @@ onMounted(async () => {
     } else {
       startClock(maxDuration.value)
     }
+    // A refreshed page mid-take must resume the banner too, not only the timer.
+    startAudioPoll()
   }
 
   await openPreview()
@@ -167,6 +337,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopPolling()
+  stopAudioPoll()
   /*
    * sendBeacon survives the page unloading, which a plain fetch does not. The
    * service treats this route as idempotent and tolerates an empty body because of
@@ -208,6 +379,7 @@ async function onStart() {
     if (!result) return
     await fetch(sid)
     startClock(result.auto_stop_at_s)
+    startAudioPoll()
     toast.success('Recording started')
   } catch (error) {
     const { message } = describeError(error)
@@ -229,6 +401,10 @@ async function onStop() {
     await run('stop', () => api.stopRecord(sid, props.index))
     await fetch(sid)
     resetClock()
+    // The banner switches from the live view to what the saved artifact says, so
+    // the poll is no longer needed.
+    stopAudioPoll()
+    audioLive.value = null
     toast.success('Take saved')
   } catch (error) {
     const { code, message } = describeError(error)
@@ -360,11 +536,65 @@ async function leaveForHome() {
               <span class="hud__time mono">{{ formatSeconds(artifact.duration_s) }}</span>
             </div>
 
+            <!--
+              The microphone level, over the picture the collector is watching. An
+              open microphone that hears nothing is the one failure that looks like
+              success everywhere else, so it belongs in the same eyeline as the
+              take rather than in a note further down the page.
+            -->
+            <div
+              v-if="audioMeterVisible"
+              class="hud hud--mic"
+              :class="{ 'hud--mic-idle': !audioMeterActive }"
+              role="meter"
+              aria-label="Microphone level"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :aria-valuenow="audioLevel"
+              :aria-valuetext="audioMeterText"
+            >
+              <svg class="hud__mic" viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  d="M8 1.5a2 2 0 0 1 2 2v4a2 2 0 1 1-4 0v-4a2 2 0 0 1 2-2Z"
+                  fill="currentColor"
+                />
+                <path
+                  d="M4 7.5a4 4 0 0 0 8 0M8 11.5V14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <span class="hud__bars" aria-hidden="true">
+                <span
+                  class="hud__bars-fill"
+                  :class="{ 'hud__bars-fill--hot': audioClipping }"
+                  :style="{ width: `${audioLevel}%` }"
+                />
+                <span class="hud__bars-hold" :style="{ left: `${audioHoldLevel}%` }" />
+              </span>
+              <span class="hud__level mono">{{ audioLevel }}</span>
+            </div>
+
             <div class="hud hud--right mono">
               {{ config?.preview ? `${config.preview.fps} fps` : '--' }}
             </div>
           </template>
         </PreviewPane>
+
+        <!--
+          Persistent, unlike a toast: the dangerous audio failure is a mic that
+          opened and delivers silence, which every other view reports as success.
+        -->
+        <p
+          v-if="audioNotice"
+          class="audio-notice"
+          :class="`audio-notice--${audioNotice.tone}`"
+          role="status"
+        >
+          {{ audioNotice.text }}
+        </p>
 
         <!--
           Shown only once a take exists. The verdict is what unlocks Next stage,
@@ -393,6 +623,10 @@ async function leaveForHome() {
             <dd>{{ remaining === null ? '--' : formatClock(remaining) }}</dd>
             <dt>Size so far</dt>
             <dd>~{{ formatBytes(estimatedBytes) }}</dd>
+            <template v-if="config?.audio.enabled">
+              <dt>Audio</dt>
+              <dd :class="{ 'railblock__bad': audioSilent }">{{ audioMeterText }}</dd>
+            </template>
           </template>
 
           <template v-else-if="artifact">
@@ -411,6 +645,10 @@ async function leaveForHome() {
             <dd>{{ minDuration }} s</dd>
             <dt>Output</dt>
             <dd>{{ outputName }}</dd>
+            <template v-if="config?.audio.enabled">
+              <dt>Audio</dt>
+              <dd>{{ config.audio.samplerate }} Hz, {{ config.audio.output_name }}</dd>
+            </template>
           </template>
         </dl>
 
@@ -499,6 +737,30 @@ async function leaveForHome() {
   min-width: 0;
 }
 
+/*
+ * Audio warning. Sits between the feed and the review panel so it is in the same
+ * eyeline as the picture the collector is judging.
+ */
+.audio-notice {
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+}
+
+.audio-notice--warn {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.audio-notice--danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
 @media (max-width: 1080px) {
   .cap {
     grid-template-columns: minmax(0, 1fr);
@@ -531,6 +793,10 @@ async function leaveForHome() {
 
 .railblock__stamp {
   font-size: var(--t-xs);
+}
+
+.railblock__bad {
+  color: var(--warn);
 }
 
 .cap__hint {
@@ -612,6 +878,77 @@ async function leaveForHome() {
   color: rgba(232, 240, 241, 0.82);
   font-weight: 400;
   letter-spacing: 0.04em;
+}
+
+/*
+ * Microphone level. Sits directly under REC so it shares that eyeline, and stays
+ * on a dark translucent pill whatever the picture behind it is doing: the whole
+ * point is to be readable while someone is watching the subject, not the HUD.
+ */
+.hud--mic {
+  top: calc(var(--s4) + 34px);
+  left: var(--s4);
+  gap: var(--s2);
+  padding: 5px var(--s3) 5px var(--s2);
+  background: rgba(12, 16, 18, 0.72);
+  color: rgba(232, 240, 241, 0.92);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* Audio configured but not confirmed yet. Kept visible rather than unmounted, so
+   the pill does not appear mid take; dimmed so a flat bar is not read as silence. */
+.hud--mic-idle {
+  opacity: 0.55;
+}
+
+.hud__mic {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  opacity: 0.75;
+}
+
+/* The bar is drawn inside a fixed width box, so the pill does not grow and shrink
+   as the level moves and pull the eye away from the subject. */
+.hud__bars {
+  position: relative;
+  display: block;
+  width: 74px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: rgba(232, 240, 241, 0.22);
+  overflow: hidden;
+}
+
+.hud__bars-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-full);
+  background: #8fd3b8;
+  transition: width 90ms linear;
+}
+
+.hud__bars-fill--hot {
+  background: #f0907f;
+}
+
+.hud__bars-hold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(255, 255, 255, 0.9);
+  transition: left 90ms linear;
+}
+
+.hud__level {
+  min-width: 2ch;
+  font-size: var(--t-2xs);
+  letter-spacing: 0;
+  text-align: right;
+  opacity: 0.82;
 }
 
 .hud__dot {

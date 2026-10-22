@@ -26,9 +26,10 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import paths
+from .audio import AudioWorker, DisabledAudio, dbfs
 from .camera import CameraWorker
 from .config import Config
 from .device import DeviceProbe
@@ -36,6 +37,7 @@ from .errors import ApiError
 from .guides import GuideStore
 from .project import ProjectStore
 from .sessions import (
+    AUDIO_NAME,
     BAG_NAME,
     REVIEW_VERDICTS,
     THUMB_NAME,
@@ -83,6 +85,7 @@ class CaptureService:
         guides: GuideStore,
         device: DeviceProbe,
         camera: CameraWorker,
+        audio: Optional[AudioWorker] = None,
     ) -> None:
         self.config = config
         self.sessions = sessions
@@ -90,6 +93,9 @@ class CaptureService:
         self.guides = guides
         self.device = device
         self.camera = camera
+        # Optional so a caller that only exercises the camera state machine, such
+        # as the session tests, does not have to build an audio device.
+        self.audio = audio if audio is not None else DisabledAudio(config)
 
         # The state machine lock. Held only for in memory transitions.
         self.lock = threading.RLock()
@@ -175,6 +181,7 @@ class CaptureService:
                 log.warning("could not normalise %s: %s", session.get("name"), exc.message)
 
     def shutdown(self) -> None:
+        self.audio.shutdown()
         self.camera.shutdown()
 
     # ------------------------------------------------------------- sessions
@@ -390,19 +397,41 @@ class CaptureService:
 
             stage_dir = Path(session["data_dir"]) / stage_dir_name(index)
             bag_path = stage_dir / BAG_NAME
+            audio_path = stage_dir / AUDIO_NAME
             limit = float(stage["max_duration_s"])
             session_id = session["session_id"]
 
         stage_dir.mkdir(parents=True, exist_ok=True)
-        # A leftover from a previous take would confuse the SDK recorder, and the
-        # size check below would then read the wrong file.
-        try:
-            bag_path.unlink(missing_ok=True)
-        except OSError as exc:
-            log.warning("could not clear the previous recording %s: %s", bag_path, exc)
+        # Leftovers from a previous take would confuse the SDK recorder, and the
+        # size check below would then read the wrong file. A stale wav would also
+        # make the next take look as if it had audio it does not have.
+        for leftover in (bag_path, audio_path):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("could not clear the previous recording %s: %s", leftover, exc)
 
+        audio_opened = False
         with self._camera_lock:
-            self.camera.start_recording(bag_path, limit)
+            # Audio first, camera second, so the wav covers the whole take. The
+            # excess at the head is measured by the offset, whereas audio that
+            # started late would lose its tail with no way to recover it.
+            if self.audio.enabled:
+                try:
+                    self.audio.start(audio_path, limit)
+                    audio_opened = True
+                except ApiError as exc:
+                    if self.audio.required:
+                        raise
+                    # Audio is the sidecar, not the dataset. Record the video and
+                    # let the screens say the take has no audio.
+                    log.warning("recording without audio: %s", exc.message)
+            try:
+                self.camera.start_recording(bag_path, limit)
+            except ApiError:
+                if audio_opened:
+                    self.audio.stop()
+                raise
 
         started_at = now_iso()
         with self.lock:
@@ -412,6 +441,8 @@ class CaptureService:
                 # the device rather than leaving it recording into a deleted folder.
                 with self._camera_lock:
                     self.camera.stop()
+                    if audio_opened:
+                        self.audio.stop()
                 raise ApiError("SESSION_NOT_FOUND", detail={"session_id": sid})
             stage = self.sessions.stage_of(session, index)
             stage["state"] = "recording"
@@ -462,12 +493,24 @@ class CaptureService:
             data_dir = session["data_dir"]
 
         with self._camera_lock:
-            # Order matters. The recording ends when the pipeline closes, so the
-            # worker stamps that moment itself and the preview restart that
-            # follows is not counted as recording time. The thumbnail is taken
-            # before the restart too, because opening a pipeline clears the frame
-            # it holds.
-            counts = self.camera.stop_recording()
+            # Order matters, and this is the only ordering that lines the audio up
+            # with the picture.
+            #
+            # The take ends at the instant `stop_recording` stamps it, which is
+            # before the pipeline is closed: closing a multi gigabyte bag takes
+            # one to four seconds. So the audio is told to stop from inside that
+            # stamp, via `on_take_end`, and only joined afterwards. Stopping it
+            # from here instead is wrong in both directions: before the call the
+            # WAV ends seconds early, after it the WAV runs seconds long. That
+            # second case is what produced an 11 s take with a 16 s file.
+            audio_on = self.audio.enabled
+            audio_take = None
+            counts = self.camera.stop_recording(
+                on_take_end=self.audio.request_stop if audio_on else None
+            )
+            if audio_on:
+                audio_take = self.audio.stop()
+            video_span = self.camera.recording_span()
             stopped_at = now_iso()
             thumbnail = self.camera.take_thumbnail()
             self.camera.start_preview()
@@ -522,6 +565,16 @@ class CaptureService:
             except OSError as exc:
                 log.warning("could not write the thumbnail for stage %d: %s", index, exc)
 
+        audio_block = self._audio_artifact(
+            index, stage_dir, audio_take, video_span, duration
+        )
+        if audio_take is not None and audio_take.get("error") is not None:
+            log.warning(
+                "stage %d audio was partial: %s",
+                index,
+                audio_take["error"].message,
+            )
+
         artifact = {
             "bag_path": f"{stage_dir_name(index)}\\{BAG_NAME}" if "\\" in data_dir else f"{stage_dir_name(index)}/{BAG_NAME}",
             "size_bytes": int(size),
@@ -534,6 +587,7 @@ class CaptureService:
             "thumbnail_url": (
                 f"/api/sessions/{sid}/stages/{index}/thumbnail" if thumbnail else None
             ),
+            "audio": audio_block,
         }
 
         with self.lock:
@@ -552,11 +606,12 @@ class CaptureService:
             public = self._public_artifact(artifact)
 
         log.info(
-            "stage %d saved, %.1fs, %d bytes, %d streams",
+            "stage %d saved, %.1fs, %d bytes, %d streams%s",
             index,
             duration,
             size,
             len(counts),
+            f", audio {audio_block['duration_s']:.1f}s" if audio_block else ", no audio",
         )
         return {"stage_index": index, "state": "saved", "artifact": public}
 
@@ -842,11 +897,101 @@ class CaptureService:
             log.warning("could not rewrite meta.json for stage %d: %s", index, exc.message)
 
     def _cleanup_stage_files(self, stage_dir: Path) -> None:
-        for name in (BAG_NAME, THUMB_NAME):
+        for name in (BAG_NAME, AUDIO_NAME, THUMB_NAME):
             try:
                 (stage_dir / name).unlink(missing_ok=True)
             except OSError as exc:
                 log.warning("could not remove %s: %s", stage_dir / name, exc)
+
+    # ---------------------------------------------------------------- audio
+
+    def _audio_artifact(
+        self,
+        index: int,
+        stage_dir: Path,
+        take: Optional[Dict[str, Any]],
+        video_span: Tuple[Optional[float], Optional[float]],
+        video_duration: float = 0.0,
+    ) -> Optional[Dict[str, Any]]:
+        """Shape one take's audio block, or ``None`` when it has no audio.
+
+        The offset is measured here rather than at start because the first video
+        frame only exists after the pipeline has been running for a moment. Using
+        the pipeline open time instead would fold the 50-300 ms start latency into
+        the offset, which is the same order as the tolerance the dataset needs.
+        """
+        if take is None or not take.get("file"):
+            return None
+
+        path = stage_dir / AUDIO_NAME
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        if size <= 0:
+            return None
+
+        audio_started = take.get("started_mono")
+        audio_stopped = take.get("stopped_mono")
+        video_started, video_stopped = video_span
+
+        offset_ms = 0
+        if audio_started is not None and video_started is not None:
+            offset_ms = int(round((audio_started - video_started) * 1000))
+
+        # A real clock-drift figure needs two anchors measured in the same domain.
+        # The second one is not available here: the worker knows when it noticed
+        # the stop, not when the device captured the last sample. Reporting the
+        # difference would measure thread scheduling and look like a clock fault,
+        # so the check is stated as what it actually is: did the audio come out
+        # materially shorter than the video it covers.
+        audio_duration = float(take.get("duration_s") or 0.0)
+        if audio_duration > 0 and (audio_duration + 1.0) < video_duration:
+            log.warning(
+                "stage %d audio is %.1fs but the video is %.1fs; samples were lost",
+                index,
+                audio_duration,
+                video_duration,
+            )
+        # A second or more past the picture means the stop ordering regressed and
+        # the microphone is being recorded while the bag is finalised, which is how
+        # an 11 s take once produced a 16 s file. A few hundred milliseconds is the
+        # device's own buffer period and is expected.
+        if audio_stopped is not None and video_stopped is not None:
+            tail_ms = (audio_stopped - video_stopped) * 1000
+            if tail_ms > 1500:
+                log.warning(
+                    "stage %d audio ran %.0f ms past the video; the take was stopped "
+                    "in the wrong order",
+                    index,
+                    tail_ms,
+                )
+        samplerate = int(take.get("samplerate") or self.config.audio_samplerate)
+        block_ms = int(round(self.config.audio_block_frames / float(samplerate) * 1000))
+        return {
+            "file": AUDIO_NAME,
+            "device": take.get("device") or "",
+            "samplerate": samplerate,
+            "channels": int(take.get("channels") or self.config.audio_channels),
+            "sample_format": self.config.audio_sample_format,
+            "duration_s": audio_duration,
+            "size_bytes": int(size),
+            "partial": bool(take.get("partial")),
+            "overruns": int(take.get("overruns") or 0),
+            "peak_dbfs": dbfs(take.get("peak") or 0),
+            "sync": {
+                "offset_ms": offset_ms,
+                "method": "monotonic_anchor",
+                # One read block plus the device's own input latency, which is
+                # not visible to this process. Reported so a consumer knows this
+                # is an estimate and not a sample-accurate claim.
+                "estimated_error_ms": block_ms + 60,
+            },
+        }
+
+    def audio_status(self) -> Dict[str, Any]:
+        """Live audio view for the capture screen, one light call per second."""
+        return self.audio.status()
 
     def _on_auto_stop(self) -> None:
         """The camera reached the stage limit. Save it without a browser.
@@ -921,4 +1066,5 @@ class CaptureService:
             "streams": list(artifact.get("streams") or []),
             "frame_counts": dict(artifact.get("frame_counts") or {}),
             "thumbnail_url": artifact.get("thumbnail_url"),
+            "audio": artifact.get("audio"),
         }
