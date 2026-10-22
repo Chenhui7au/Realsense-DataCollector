@@ -20,6 +20,20 @@ export interface StageArtifact {
   thumbnail_url: string
 }
 
+export type StageVerdict = 'passed' | 'failed'
+
+/**
+ * The operator's verdict on a take, written on the capture screen.
+ *
+ * `verdict` is null until the take is reviewed, and that is also what keeps
+ * `advance` out of `allowed_actions`, so the button state needed no local rule.
+ */
+export interface StageReview {
+  verdict: StageVerdict | null
+  comment: string
+  reviewed_at: string | null
+}
+
 export interface Stage {
   index: number
   name: string
@@ -39,6 +53,8 @@ export interface Stage {
    * the elapsed timer instead of restarting it from zero.
    */
   recording_started_at: string | null
+  /** Cleared every time a new take is saved, so a verdict never outlives its bag. */
+  review: StageReview
   artifact: StageArtifact | null
 }
 
@@ -234,6 +250,21 @@ export interface AdvanceResult {
   next: { type: 'guide' | 'finish'; stage_index?: number }
 }
 
+/** Body of the review endpoint. The verdict is required, the comment is not. */
+export interface StageReviewBody {
+  verdict: StageVerdict
+  comment?: string
+}
+
+/**
+ * Carries the whole session so the client can replace its state in one step and
+ * pick up the recomputed `allowed_actions`, which is what unlocks advance.
+ */
+export interface ReviewResult {
+  session: Session
+  stage_index: number
+}
+
 export interface PreviewResult {
   streaming: boolean
   stream_url: string
@@ -350,5 +381,7 @@ export interface CaptureApi {
   startRecord(sid: string, index: number, note?: string): Promise<StartRecordResult>
   stopRecord(sid: string, index: number): Promise<StopRecordResult>
   discardRecord(sid: string, index: number): Promise<DiscardRecordResult>
+  /** Marks a saved take passed or failed. Required before `advance`. */
+  saveReview(sid: string, index: number, body: StageReviewBody): Promise<ReviewResult>
   advance(sid: string, index: number): Promise<AdvanceResult>
 }

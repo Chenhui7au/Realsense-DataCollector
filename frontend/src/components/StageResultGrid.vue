@@ -37,8 +37,17 @@ const rows = computed<Row[]>(() =>
       <div class="rcard__body">
         <div class="rcard__top">
           <span class="rcard__no mono">{{ stageNumber(row.stage.index) }}</span>
-          <span v-if="row.recorded" class="rcard__ok">Saved</span>
-          <span v-else class="rcard__miss">Missing</span>
+          <span class="rcard__tags">
+            <span v-if="row.recorded" class="rcard__ok">Saved</span>
+            <span v-else class="rcard__miss">Missing</span>
+            <span
+              v-if="row.stage.review?.verdict"
+              class="rcard__verdict"
+              :class="`rcard__verdict--${row.stage.review.verdict}`"
+            >
+              {{ row.stage.review.verdict }}
+            </span>
+          </span>
         </div>
         <h3 class="rcard__name">{{ row.stage.name }}</h3>
 
@@ -56,6 +65,10 @@ const rows = computed<Row[]>(() =>
             <dd class="mono">{{ formatDateTime(row.stage.artifact?.started_at) }}</dd>
           </div>
         </dl>
+
+        <p v-if="row.stage.review?.comment" class="rcard__note">
+          {{ row.stage.review.comment }}
+        </p>
       </div>
     </article>
   </div>
@@ -138,8 +151,15 @@ const rows = computed<Row[]>(() =>
   font-weight: 600;
 }
 
+.rcard__tags {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
 .rcard__ok,
-.rcard__miss {
+.rcard__miss,
+.rcard__verdict {
   font-size: var(--t-2xs);
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -156,6 +176,31 @@ const rows = computed<Row[]>(() =>
 .rcard__miss {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+.rcard__verdict--passed {
+  background: var(--saved-bg);
+  color: var(--saved-fg);
+}
+
+.rcard__verdict--failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/*
+ * The operator's own words, kept to a couple of lines. The full text is in
+ * meta.json, this is only so the finish screen can be read at a glance.
+ */
+.rcard__note {
+  margin: var(--s2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-500);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .rcard__name {

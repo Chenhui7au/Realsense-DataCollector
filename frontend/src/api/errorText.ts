@@ -16,6 +16,8 @@ const EXPLANATIONS: Record<string, string> = {
   STAGE_ALREADY_SAVED: 'This stage is already saved. Use Re-record to take it again.',
   STAGE_NOT_SAVED: 'Save this stage before moving on.',
   STAGE_NOT_RECORDING: 'This stage is not recording, so there is nothing to stop.',
+  REVIEW_REQUIRED: 'Mark this take Passed or Failed before moving on.',
+  REVIEW_NOTE_TOO_LONG: 'That comment is longer than the limit. Shorten it and try again.',
   RECORDING_TOO_SHORT: 'That take was too short and has been discarded. Record for longer.',
   DISK_SPACE_LOW: 'Not enough free disk space to record. Clear some space on the host.',
   CAMERA_ERROR: 'The camera reported an error. Check the connection and try again.',

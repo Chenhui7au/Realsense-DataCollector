@@ -58,6 +58,18 @@ class StageArtifact(BaseModel):
     thumbnail_url: str
 
 
+class StageReview(BaseModel):
+    """The operator's verdict on a take, written on the capture screen.
+
+    ``verdict`` is null until the take is reviewed, which is also what keeps
+    ``advance`` out of ``allowed_actions``. ``comment`` is free text and optional.
+    """
+
+    verdict: Optional[Literal["passed", "failed"]] = None
+    comment: str = ""
+    reviewed_at: Optional[str] = None
+
+
 class Stage(BaseModel):
     index: int
     name: str
@@ -67,6 +79,7 @@ class Stage(BaseModel):
     state: Literal["idle", "recording", "saved"]
     allowed_actions: List[Literal["start", "stop", "discard", "advance"]] = Field(default_factory=list)
     recording_started_at: Optional[str] = None
+    review: StageReview = Field(default_factory=StageReview)
     artifact: Optional[StageArtifact] = None
 
 
@@ -128,6 +141,18 @@ class RecordNoteBody(BaseModel):
     note: Optional[str] = None
 
 
+class StageReviewBody(BaseModel):
+    """Body of ``stages/{index}/review``.
+
+    The verdict is required: it is the gate in front of ``advance``. The comment
+    is optional and its length is checked against the configured limit by the
+    service, so the error carries the limit in ``detail``.
+    """
+
+    verdict: Literal["passed", "failed"]
+    comment: Optional[str] = None
+
+
 class StartRecordResult(BaseModel):
     stage_index: int
     state: Literal["recording"]
@@ -151,11 +176,23 @@ class DiscardRecordResult(BaseModel):
 
 class AdvanceResult(BaseModel):
     session: Session
-    # Not a typed model on purpose. docs/API.md section 6.10 specifies two exact
+    # Not a typed model on purpose. docs/API.md section 6.11 specifies two exact
     # shapes, ``{"type": "guide", "stage_index": 2}`` and ``{"type": "finish"}``,
     # and a typed model with an optional field would serialise the finish case as
     # ``{"type": "finish", "stage_index": null}``.
     next: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewResult(BaseModel):
+    """Returned by the review endpoint.
+
+    Carries the whole session rather than the single stage, so the client can
+    replace its state in one step and pick up the freshly recomputed
+    ``allowed_actions``. That is what unlocks ``advance`` without a second read.
+    """
+
+    session: Session
+    stage_index: int
 
 
 # ---------------------------------------------------------------------- health

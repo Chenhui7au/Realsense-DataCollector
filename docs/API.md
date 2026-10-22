@@ -46,7 +46,9 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 | `STAGE_ALREADY_SAVED` | 409 | 该阶段已保存，需先重新录制 |
 | `STAGE_NOT_SAVED` | 409 | 该阶段尚未保存 |
 | `STAGE_NOT_RECORDING` | 409 | 该阶段未在录制，不能停止 |
-| `STAGE_NOT_CURRENT` | 409 | 只能推进当前阶段，该阶段不是当前阶段 |
+| `STAGE_NOT_CURRENT` | 409 | 只能推进或评价当前阶段，该阶段不是当前阶段 |
+| `REVIEW_REQUIRED` | 409 | 该阶段还没有 passed 或 failed 结论，不能推进 |
+| `REVIEW_NOTE_TOO_LONG` | 400 | 反馈评论超过长度上限 |
 | `PROJECT_NOT_CONFIGURED` | 409 | 尚未设置项目目录，无法创建会话 |
 | `PROJECT_PATH_INVALID` | 400 | 项目目录路径不合法，例如不是绝对路径或含上级目录 |
 | `PROJECT_PATH_NOT_WRITABLE` | 403 | 项目目录不可写或无法创建 |
@@ -120,6 +122,7 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 | POST | `/api/sessions/{sid}/stages/{index}/record/start` | 开始录制 |
 | POST | `/api/sessions/{sid}/stages/{index}/record/stop` | 停止并保存 |
 | POST | `/api/sessions/{sid}/stages/{index}/record/discard` | 丢弃并允许重录 |
+| POST | `/api/sessions/{sid}/stages/{index}/review` | 提交本条的 passed 或 failed 结论与评论 |
 | POST | `/api/sessions/{sid}/stages/{index}/advance` | 进入下一阶段 |
 | GET | `/api/sessions/{sid}/stages/{index}/artifact` | 查询录制结果元信息 |
 | GET | `/api/sessions/{sid}/stages/{index}/thumbnail` | 录制首帧缩略图 |
@@ -189,6 +192,7 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 | `state` | string | `idle` 或 `recording` 或 `saved` |
 | `allowed_actions` | string[] | 当前状态下允许的动作，取值 `start` 与 `stop` 与 `discard` 与 `advance` |
 | `recording_started_at` | string\|null | 录制中为该次录制的起始时刻，否则为 `null` |
+| `review` | object | 本条数据的结论与评论，结构见 3.2.2 |
 | `artifact` | object\|null | 保存后填充，结构见 3.3 |
 
 `recording_started_at` 是给刷新场景用的。浏览器在录制途中刷新后，只能从会话对象拿回状态，拿不到 `record/start` 当时的返回值，靠这个字段才能重建已录时长，不然计时器只能从零重新开始。
@@ -219,6 +223,28 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 | `current_stage` | int | 当前应处的阶段序号 |
 | `saved_count` | int | 已保存阶段的数量 |
 | `size_bytes` | int | 本轮已落盘的字节总数 |
+
+### 3.2.2 阶段结论
+
+每条保存下来的录制数据都带一份人工结论，在采集页上填写，与 3.3 的录制结果一起写入该阶段的 `meta.json`。
+
+```json
+{
+  "verdict": "passed",
+  "comment": "slight glare on the left edge",
+  "reviewed_at": "2026-09-20T14:31:20+08:00"
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `verdict` | string\|null | `passed` 或 `failed`；`null` 表示尚未评价 |
+| `comment` | string | 采集员写的自由文本，没有则为空串 |
+| `reviewed_at` | string\|null | 最后一次提交结论的时刻 |
+
+`verdict` 为 `null` 时，阶段的 `allowed_actions` 里不会出现 `advance`，见 3.7。每次重新录制都会把整份结论清空，因为结论描述的是某一个 bag 文件，换了文件就不该沿用。
+
+`verdict` 只是标签，`failed` 不会删除视频，也不会把该阶段排除出会话。数据是否剔除由数据集的使用者决定，见 6.10。
 
 ### 3.3 录制结果
 
@@ -396,7 +422,7 @@ v0.16 变更点。阶段数量改为可配置，`GET /api/config` 的 `total_sta
 | --- | --- | --- | --- | --- | --- |
 | `idle` | 尚未录制 | 允许 | 拒绝 `STAGE_NOT_RECORDING` | 拒绝 `STAGE_NOT_SAVED` | 拒绝 `STAGE_NOT_SAVED` |
 | `recording` | 正在录制 | 拒绝 `STAGE_ALREADY_RECORDING` | 允许 | 拒绝 `STAGE_NOT_SAVED` | 拒绝 `STAGE_NOT_SAVED` |
-| `saved` | 已保存 | 拒绝 `STAGE_ALREADY_SAVED` | 拒绝 `STAGE_NOT_RECORDING` | 允许 | 允许 |
+| `saved` | 已保存 | 拒绝 `STAGE_ALREADY_SAVED` | 拒绝 `STAGE_NOT_RECORDING` | 允许 | 已有结论时允许，否则拒绝 `REVIEW_REQUIRED` |
 
 ```mermaid
 stateDiagram-v2
@@ -404,8 +430,10 @@ stateDiagram-v2
     idle --> recording: start
     recording --> saved: stop
     saved --> idle: discard 并删除文件
-    saved --> [*]: advance
+    saved --> [*]: 提交 review 后 advance
 ```
+
+`saved` 状态是唯一一处动作取决于数据而不是状态的场合：结论没填之前 `advance` 不在允许列表里。这样前端的按钮禁用与后端返回 409 用的是同一份判断，不会出现按钮可点但请求被拒的情况。
 
 `allowed_actions` 就是上表中标记为允许的那些动作，顺序固定为 `start` 与 `stop` 与 `discard` 与 `advance`。
 
@@ -1124,7 +1152,47 @@ Content-Type: image/jpeg
 
 删除是不可逆操作，前端必须二次确认。
 
-### 6.10 进入下一阶段
+### 6.10 提交采集反馈
+
+`POST /api/sessions/{sid}/stages/{index}/review`
+
+一次录制保存后，采集员在采集页上为这条数据打一个结论，并可附一段自由文本。两者都写入该阶段的 `meta.json`，供后续分析直接读取。
+
+请求体。
+
+```json
+{ "verdict": "passed", "comment": "slight glare on the left edge" }
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `verdict` | string | 必填，取值 `passed` 或 `failed` |
+| `comment` | string\|null | 选填，前后空白会被去掉，长度上限见 YAML 的 `review.comment_max_length` |
+
+后端行为。
+
+1. 校验 `comment` 长度，超限则 400 与 `REVIEW_NOTE_TOO_LONG`，`detail` 里给出 `length` 与 `max_length`
+2. 校验会话未结束，已结束则 409 与 `SESSION_FINISHED`
+3. 校验阶段状态为 `saved`，否则 409 与 `STAGE_NOT_SAVED`
+4. 校验 `index` 等于会话的 `current_stage`，否则 409 与 `STAGE_NOT_CURRENT`
+5. 写入 `verdict` 与 `comment` 与 `reviewed_at`，同时刷新 `session.json` 与 `meta.json`
+
+响应 200 返回整个会话对象，前端据此一步替换本地状态并拿到重新计算过的 `allowed_actions`。
+
+```json
+{
+  "session": { "...": "会话对象" },
+  "stage_index": 1
+}
+```
+
+`verdict` 是进入下一阶段的前提，见 3.7。只有当前阶段可以提交反馈，这一点与页面上的限制一致：一轮推进之后，那一阶段的结论就已经定了。想改结论只能重录，重录会连同结论一起清掉。
+
+**结论只是标签，永远不删数据。** 无论选 `passed` 还是 `failed`，`capture.db3` 与 `thumb.jpg` 都不会被删除或改写，`failed` 也不会被自动排除出数据集。删除只发生在三个地方：显式调用 `record/discard`（重录）、录制时长低于 `min_duration_s`、以及录制产出空文件。归档还是剔除由数据集的使用者决定，服务不替他们做这个判断。
+
+`verdict` 不在允许取值内时由请求体校验拦下，返回 422 与 `REQUEST_INVALID`。
+
+### 6.11 进入下一阶段
 
 `POST /api/sessions/{sid}/stages/{index}/advance`
 
@@ -1132,11 +1200,14 @@ Content-Type: image/jpeg
 
 1. 校验会话未结束，已结束则 409 与 `SESSION_FINISHED`
 2. 校验阶段状态为 `saved`
-3. 校验 `index` 等于会话的 `current_stage`，否则 409 与 `STAGE_NOT_CURRENT`
-4. 阶段序号加一
-5. 若已越过最后一个阶段，会话状态置为 `finished`，写入 `finished_at`
+3. 校验该阶段已有 `passed` 或 `failed` 的结论，否则 409 与 `REVIEW_REQUIRED`
+4. 校验 `index` 等于会话的 `current_stage`，否则 409 与 `STAGE_NOT_CURRENT`
+5. 阶段序号加一
+6. 若已越过最后一个阶段，会话状态置为 `finished`，写入 `finished_at`
 
-第三条校验是必要的。`current_stage` 只能由本接口推进，如果允许推进任意已保存的阶段，一个回看早期阶段的请求就会把整个会话的进度倒拨回去。
+第三条是采集质量的硬要求：没有人工确认过的数据不应该进入归档轮次。文案与评论本身是选填的，结论不能空着。
+
+第四条校验也是必要的。`current_stage` 只能由本接口推进，如果允许推进任意已保存的阶段，一个回看早期阶段的请求就会把整个会话的进度倒拨回去。
 
 响应 200 返回整个会话对象，前端据此决定跳转引导页还是结束页。
 
@@ -1149,13 +1220,13 @@ Content-Type: image/jpeg
 
 最后一阶段完成后 `next` 的取值为 `{ "type": "finish" }`。
 
-### 6.11 查询录制结果
+### 6.12 查询录制结果
 
 `GET /api/sessions/{sid}/stages/{index}/artifact`
 
 响应 200 返回 3.3 中的录制结果对象。未保存时返回 409 与 `STAGE_NOT_SAVED`。
 
-### 6.12 录制缩略图
+### 6.13 录制缩略图
 
 `GET /api/sessions/{sid}/stages/{index}/thumbnail`
 
@@ -1364,7 +1435,12 @@ Content-Type: image/jpeg
       "min_duration_s": 1.0,
       "max_duration_s": 300.0,
       "state": "saved",
-      "note": ""
+      "note": "",
+      "review": {
+        "verdict": "passed",
+        "comment": "slight glare on the left edge",
+        "reviewed_at": "2026-09-20T14:31:20+08:00"
+      }
     }
   ]
 }
@@ -1374,7 +1450,7 @@ Content-Type: image/jpeg
 
 目录名可能会被人在文件系统里手工改掉，这会使它与 `session.json` 里的 `name` 不一致。服务以磁盘上的目录名作为权威，启动时若发现不一致则修正记录并记告警，而不是拒绝加载。采集员手工整理目录是合理行为，不应该因此让数据不可读。
 
-`stage_XX/meta.json` 记录单阶段结果。
+`stage_XX/meta.json` 记录单阶段结果。除了录制结果，还包括采集员在采集页上留下的结论与评论，因此一份数据集拷走之后，每条数据是不是合格不需要再回头查别的地方。
 
 ```json
 {
@@ -1390,7 +1466,12 @@ Content-Type: image/jpeg
   "sha256": "9f2c...",
   "streams": ["depth", "color", "infrared_1", "infrared_2", "accel", "gyro"],
   "frame_counts": { "depth": 372, "color": 372, "accel": 781, "gyro": 2480 },
-  "note": ""
+  "note": "",
+  "review": {
+    "verdict": "passed",
+    "comment": "slight glare on the left edge",
+    "reviewed_at": "2026-09-20T14:31:20+08:00"
+  }
 }
 ```
 
@@ -1407,7 +1488,7 @@ Content-Type: image/jpeg
 | 模块 | 职责 |
 | --- | --- |
 | `api` | 路由定义、请求校验、错误体封装 |
-| `CaptureService` | 会话与阶段状态机、命令编排、单例保护 |
+| `CaptureService` | 会话与阶段状态机、命令编排、单例保护、录制结论的落盘 |
 | `CameraWorker` | 独占 pipeline 的采集线程，编码 JPEG，管理录制文件 |
 | `ProjectStore` | 项目目录的设置读写、路径校验、可写性与空间探测 |
 | `FsBrowser` | 目录枚举、路径规范化、新建目录，只服务选择器 |

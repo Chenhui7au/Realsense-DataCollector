@@ -41,6 +41,8 @@ ERRORS: Dict[str, tuple] = {
     "STAGE_NOT_SAVED": (409, "This stage has not been saved yet."),
     "STAGE_NOT_RECORDING": (409, "This stage is not recording, there is nothing to stop."),
     "STAGE_NOT_CURRENT": (409, "Only the current stage can be advanced."),
+    "REVIEW_REQUIRED": (409, "Choose Passed or Failed for this take before moving on."),
+    "REVIEW_NOTE_TOO_LONG": (400, "That review comment is longer than the limit."),
     "PROJECT_NOT_CONFIGURED": (409, "No project folder is set."),
     "PROJECT_PATH_INVALID": (400, "The project folder path is not valid."),
     "PROJECT_PATH_NOT_WRITABLE": (403, "The project folder is not writable."),

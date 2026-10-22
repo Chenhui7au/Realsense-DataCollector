@@ -46,6 +46,7 @@ function hint(action: StageAction): string | undefined {
       return 'Record and save this stage first.'
     case 'advance':
       if (canAdvance.value) return undefined
+      if (stage.state === 'saved') return 'Choose Passed or Failed for this take first.'
       return 'Save this stage before moving on.'
     default:
       return undefined

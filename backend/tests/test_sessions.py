@@ -233,6 +233,14 @@ class Harness:
         body = {"name": name, **kwargs}
         return self.client.post("/api/sessions", json=body)
 
+    def review(
+        self, index: int, verdict: str = "passed", comment: str | None = None
+    ):
+        body = {"verdict": verdict, "comment": comment}
+        return self.client.post(
+            f"/api/sessions/session_a/stages/{index}/review", json=body
+        )
+
 
 @pytest.fixture()
 def harness(env):
@@ -456,7 +464,9 @@ def test_a_full_take_saves_and_reports_an_artifact(harness):
 
     stage = harness.client.get("/api/sessions/session_a").json()["stages"][0]
     assert stage["state"] == "saved"
-    assert stage["allowed_actions"] == ["discard", "advance"]
+    # advance is withheld until the take has a verdict, see the review tests.
+    assert stage["allowed_actions"] == ["discard"]
+    assert stage["review"] == {"verdict": None, "comment": "", "reviewed_at": None}
 
     stage_dir = harness.project_dir / "session_a" / "stage_01"
     assert (stage_dir / "capture.db3").is_file()
@@ -682,6 +692,7 @@ def test_advance_moves_to_the_next_stage(harness):
     harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
     time.sleep(0.3)
     harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+    harness.review(1)
 
     response = harness.client.post("/api/sessions/session_a/stages/1/advance")
     assert response.status_code == 200
@@ -706,6 +717,7 @@ def test_advancing_a_non_current_stage_is_refused(harness):
         harness.client.post(f"/api/sessions/session_a/stages/{index}/record/start", json={})
         time.sleep(0.25)
         harness.client.post(f"/api/sessions/session_a/stages/{index}/record/stop")
+    harness.review(1)
     harness.client.post("/api/sessions/session_a/stages/1/advance")
 
     response = harness.client.post("/api/sessions/session_a/stages/1/advance")
@@ -723,8 +735,11 @@ def test_the_last_advance_finishes_the_round(harness):
         time.sleep(0.25)
         harness.client.post(f"/api/sessions/session_a/stages/{index}/record/stop")
 
+    harness.review(1)
     harness.client.post("/api/sessions/session_a/stages/1/advance")
+    harness.review(2)
     harness.client.post("/api/sessions/session_a/stages/2/advance")
+    harness.review(3)
     response = harness.client.post("/api/sessions/session_a/stages/3/advance")
     assert response.status_code == 200
     body = response.json()
@@ -738,6 +753,220 @@ def test_the_last_advance_finishes_the_round(harness):
     blocked = harness.client.post("/api/sessions/session_a/stages/3/record/start", json={})
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "SESSION_FINISHED"
+
+
+# ------------------------------------------------------------------- review
+
+
+def test_a_saved_take_cannot_advance_before_it_is_reviewed(harness):
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+
+    response = harness.client.post("/api/sessions/session_a/stages/1/advance")
+    assert response.status_code == 409
+    body = response.json()["error"]
+    assert body["code"] == "REVIEW_REQUIRED"
+    assert body["detail"]["stage_index"] == 1
+
+
+@pytest.mark.parametrize("verdict", ["passed", "failed"])
+def test_a_verdict_unlocks_advance_and_lands_in_meta_json(harness, verdict):
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+
+    response = harness.review(1, verdict, "  slight glare on the left edge  ")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["stage_index"] == 1
+
+    stage = body["session"]["stages"][0]
+    assert stage["review"]["verdict"] == verdict
+    # Trimmed on the way in, so a trailing newline from the textarea never reaches
+    # the dataset.
+    assert stage["review"]["comment"] == "slight glare on the left edge"
+    assert stage["review"]["reviewed_at"]
+    assert stage["allowed_actions"] == ["discard", "advance"]
+
+    meta = json.loads(
+        (harness.project_dir / "session_a" / "stage_01" / "meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert meta["review"]["verdict"] == verdict
+    assert meta["review"]["comment"] == "slight glare on the left edge"
+
+    record = json.loads(
+        (harness.project_dir / "session_a" / "session.json").read_text(encoding="utf-8")
+    )
+    assert record["config_snapshot"][0]["review"]["verdict"] == verdict
+
+    advanced = harness.client.post("/api/sessions/session_a/stages/1/advance")
+    assert advanced.status_code == 200
+
+
+def test_a_verdict_is_only_a_label_and_never_touches_the_files(harness):
+    """Passed and failed are labels. Neither may discard or shrink the take.
+
+    Only an explicit discard, a take under the minimum, or an empty file are
+    allowed to delete anything, so this pins the invariant that review is a
+    metadata-only write. The failed case is checked on its own because it is the
+    one a reader would reasonably suspect of deleting the data.
+    """
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+
+    stage_dir = harness.project_dir / "session_a" / "stage_01"
+    before = {
+        name: (stage_dir / name).read_bytes()
+        for name in ("capture.db3", "meta.json", "thumb.jpg")
+    }
+    assert len(before["capture.db3"]) > 0
+
+    response = harness.review(1, "failed", "subject moved out of frame")
+    assert response.status_code == 200, response.text
+
+    for name, payload in before.items():
+        assert (stage_dir / name).is_file(), f"{name} was deleted by a verdict"
+    # The bag is never rewritten by a review, so it must still be byte identical.
+    assert (stage_dir / "capture.db3").read_bytes() == before["capture.db3"]
+    assert (stage_dir / "thumb.jpg").read_bytes() == before["thumb.jpg"]
+
+    artifact = harness.client.get(
+        "/api/sessions/session_a/stages/1/artifact"
+    ).json()
+    assert artifact["size_bytes"] == len(before["capture.db3"])
+
+    # Advancing keeps it too: the round is archived, not cleaned up.
+    assert harness.client.post("/api/sessions/session_a/stages/1/advance").status_code == 200
+    for name in before:
+        assert (stage_dir / name).is_file(), f"{name} was deleted by advancing"
+
+
+def test_the_review_comment_is_optional(harness):
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+
+    response = harness.review(1, "failed")
+    assert response.status_code == 200, response.text
+    review = response.json()["session"]["stages"][0]["review"]
+    assert review["verdict"] == "failed"
+    assert review["comment"] == ""
+
+
+def test_a_comment_over_the_limit_is_refused(harness):
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+
+    response = harness.review(1, "passed", "x" * 501)
+    assert response.status_code == 400
+    body = response.json()["error"]
+    assert body["code"] == "REVIEW_NOTE_TOO_LONG"
+    assert body["detail"]["max_length"] == 500
+
+    # A rejected comment must not leave a verdict behind, otherwise advance would
+    # unlock on a review the operator was told was not saved.
+    stage = harness.client.get("/api/sessions/session_a").json()["stages"][0]
+    assert stage["review"]["verdict"] is None
+    assert harness.client.post("/api/sessions/session_a/stages/1/advance").status_code == 409
+
+
+def test_a_verdict_must_be_passed_or_failed(harness):
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+
+    response = harness.client.post(
+        "/api/sessions/session_a/stages/1/review", json={"verdict": "maybe"}
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "REQUEST_INVALID"
+
+
+def test_reviewing_an_unsaved_stage_is_refused(harness):
+    harness.set_project()
+    harness.create()
+    response = harness.review(1)
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "STAGE_NOT_SAVED"
+
+
+def test_reviewing_a_stage_that_is_not_current_is_refused(harness):
+    harness.set_project()
+    harness.create()
+    for index in (1, 2):
+        harness.client.post(f"/api/sessions/session_a/stages/{index}/record/start", json={})
+        time.sleep(0.25)
+        harness.client.post(f"/api/sessions/session_a/stages/{index}/record/stop")
+    harness.review(1)
+    harness.client.post("/api/sessions/session_a/stages/1/advance")
+
+    # Stage one is still saved, so only the current stage rule can refuse this.
+    response = harness.review(1, "failed")
+    assert response.status_code == 409
+    body = response.json()["error"]
+    assert body["code"] == "STAGE_NOT_CURRENT"
+    assert body["detail"]["current_stage"] == 2
+
+
+def test_re_recording_clears_the_previous_verdict(harness):
+    harness.set_project()
+    harness.create()
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+    harness.review(1, "failed", "motion blur")
+
+    discarded = harness.client.post("/api/sessions/session_a/stages/1/record/discard")
+    assert discarded.status_code == 200
+    stage = harness.client.get("/api/sessions/session_a").json()["stages"][0]
+    assert stage["review"] == {"verdict": None, "comment": "", "reviewed_at": None}
+
+    harness.client.post("/api/sessions/session_a/stages/1/record/start", json={})
+    time.sleep(0.3)
+    harness.client.post("/api/sessions/session_a/stages/1/record/stop")
+    stage = harness.client.get("/api/sessions/session_a").json()["stages"][0]
+    assert stage["review"]["verdict"] is None
+    assert stage["allowed_actions"] == ["discard"]
+
+
+def test_a_verdict_survives_a_restart(env):
+    first_app = create_app(env["config"])
+    _stand_in_camera(first_app)
+    with TestClient(first_app) as client:
+        client.put("/api/project", json={"root": str(env["project"])})
+        client.post("/api/sessions", json={"name": "session_a"})
+        client.post("/api/sessions/session_a/stages/1/record/start", json={})
+        time.sleep(0.3)
+        client.post("/api/sessions/session_a/stages/1/record/stop")
+        client.post(
+            "/api/sessions/session_a/stages/1/review",
+            json={"verdict": "failed", "comment": "motion blur"},
+        )
+
+    second_app = create_app(env["config"])
+    _stand_in_camera(second_app)
+    with TestClient(second_app) as client:
+        stage = client.get("/api/sessions/session_a").json()["stages"][0]
+        assert stage["review"]["verdict"] == "failed"
+        assert stage["review"]["comment"] == "motion blur"
+        assert stage["allowed_actions"] == ["discard", "advance"]
 
 
 # ------------------------------------------------------------- persistence

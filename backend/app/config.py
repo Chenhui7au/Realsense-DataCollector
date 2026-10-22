@@ -130,6 +130,11 @@ class Config:
         self.recording_streams: Dict[str, Any] = dict(recording.get("streams") or {})
         self.recording_bytes_per_s: int = self._estimate_record_rate()
 
+        review = raw.get("review") or {}
+        # Upper bound on the free text an operator attaches to a take on the
+        # capture screen. The verdict itself is fixed to passed or failed.
+        self.review_comment_max_length: int = int(review.get("comment_max_length", 500))
+
         storage = raw.get("storage") or {}
         self.compress_bag: bool = bool(storage.get("compress_bag", False))
         self.keep_finished_sessions: bool = bool(

@@ -36,7 +36,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import paths
 from .config import Config
@@ -71,6 +71,44 @@ def new_session_id(when: Optional[datetime] = None) -> str:
 
 def stage_dir_name(index: int) -> str:
     return STAGE_DIR_RE.format(index)
+
+
+# A take's immediate verdict. Only these two values are accepted from the wire;
+# "not reviewed yet" is the absence of a verdict, not a third value.
+REVIEW_VERDICTS: tuple = ("passed", "failed")
+
+
+def empty_review() -> Dict[str, Any]:
+    """The un-reviewed state of a stage."""
+    return {"verdict": None, "comment": "", "reviewed_at": None}
+
+
+def normalize_review(raw: Any) -> Dict[str, Any]:
+    """Coerce a stored review into the documented shape.
+
+    Tolerant on read so a session written before this field existed, or edited by
+    hand, still loads. Strict on write, which is where the route validates.
+    """
+    review = empty_review()
+    if not isinstance(raw, dict):
+        return review
+    verdict = raw.get("verdict")
+    if verdict in REVIEW_VERDICTS:
+        review["verdict"] = str(verdict)
+    comment = raw.get("comment")
+    review["comment"] = str(comment).strip() if isinstance(comment, str) else ""
+    reviewed_at = raw.get("reviewed_at")
+    review["reviewed_at"] = str(reviewed_at) if reviewed_at else None
+    return review
+
+
+def review_verdict(stage: Dict[str, Any]) -> Optional[str]:
+    """The verdict on a stage, or ``None`` when it has not been reviewed."""
+    review = stage.get("review")
+    if not isinstance(review, dict):
+        return None
+    verdict = review.get("verdict")
+    return str(verdict) if verdict in REVIEW_VERDICTS else None
 
 
 class SessionStore:
@@ -143,6 +181,7 @@ class SessionStore:
                     "recording_started_at": None,
                     "artifact": None,
                     "note": "",
+                    "review": empty_review(),
                 }
                 for item in stage_snapshot
             ],
@@ -213,6 +252,9 @@ class SessionStore:
                     "max_duration_s": stage["max_duration_s"],
                     "state": stage["state"],
                     "note": stage.get("note", ""),
+                    # The verdict is part of the frozen stage state, so a restart
+                    # can tell a reviewed take from one that still blocks advance.
+                    "review": normalize_review(stage.get("review")),
                 }
                 for stage in session["stages"]
             ],
@@ -259,6 +301,7 @@ class SessionStore:
             "streams": artifact.get("streams", []),
             "frame_counts": artifact.get("frame_counts", {}),
             "note": stage.get("note", ""),
+            "review": normalize_review(stage.get("review")),
         }
         directory = Path(session["data_dir"]) / stage_dir_name(index)
         directory.mkdir(parents=True, exist_ok=True)
@@ -418,6 +461,7 @@ class SessionStore:
                 "recording_started_at": None,
                 "artifact": None,
                 "note": str(item.get("note") or ""),
+                "review": normalize_review(item.get("review")),
             }
 
             if str(item.get("state") or "") == "recording":
@@ -425,10 +469,17 @@ class SessionStore:
                 stages.append(stage)
                 continue
 
-            artifact = self._artifact_from_disk(directory, index)
+            artifact, review = self._artifact_from_disk(directory, index)
             if artifact is not None:
                 stage["state"] = "saved"
                 stage["artifact"] = artifact
+                # meta.json is the per stage record and carries the review. It is
+                # the fallback when the session mirror is older than the take,
+                # which happens if the mirror write failed and the meta write did
+                # not. The snapshot wins otherwise, so a deliberate clear is not
+                # undone by a stale meta file.
+                if review_verdict(stage) is None:
+                    stage["review"] = review
             elif self._has_unfinished_bag(directory, index):
                 log.warning(
                     "stage %d has a recording with no metadata, treating it as interrupted",
@@ -446,25 +497,28 @@ class SessionStore:
         except OSError:
             return False
 
-    def _artifact_from_disk(self, directory: Path, index: int) -> Optional[Dict[str, Any]]:
-        """Rebuild the artifact for a completed take, or ``None``.
+    def _artifact_from_disk(
+        self, directory: Path, index: int
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """Rebuild the artifact for a completed take, plus its review.
 
         ``meta.json`` is the completion marker. It is written only after the SDK
         has flushed the bag, so its presence is what distinguishes a real take
-        from a truncated one.
+        from a truncated one. The same file carries the operator's verdict and
+        comment, so reading both here avoids opening it twice.
         """
         stage_dir = directory / stage_dir_name(index)
         bag = stage_dir / BAG_NAME
         meta_path = stage_dir / META_NAME
         if not bag.is_file() or not meta_path.is_file():
-            return None
+            return None, empty_review()
 
         try:
             size = bag.stat().st_size
         except OSError:
-            return None
+            return None, empty_review()
         if size <= 0:
-            return None
+            return None, empty_review()
 
         meta: Dict[str, Any] = {}
         try:
@@ -473,10 +527,10 @@ class SessionStore:
                 meta = loaded
         except (OSError, ValueError) as exc:
             log.warning("meta.json for stage %d is unreadable: %s", index, exc)
-            return None
+            return None, empty_review()
 
         thumb = stage_dir / THUMB_NAME
-        return {
+        artifact = {
             "bag_path": os.path.join(stage_dir_name(index), BAG_NAME),
             "size_bytes": int(meta.get("size_bytes") or size),
             "duration_s": float(meta.get("duration_s") or 0.0),
@@ -491,6 +545,7 @@ class SessionStore:
                 else None
             ),
         }
+        return artifact, normalize_review(meta.get("review"))
 
     def _recover_interrupted_stage(self, directory: Path, index: int) -> None:
         """Move a truncated bag out of the way so the stage can be re-recorded."""

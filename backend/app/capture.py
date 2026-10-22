@@ -35,16 +35,31 @@ from .device import DeviceProbe
 from .errors import ApiError
 from .guides import GuideStore
 from .project import ProjectStore
-from .sessions import BAG_NAME, THUMB_NAME, SessionStore, now_iso, stage_dir_name
+from .sessions import (
+    BAG_NAME,
+    REVIEW_VERDICTS,
+    THUMB_NAME,
+    SessionStore,
+    empty_review,
+    normalize_review,
+    now_iso,
+    review_verdict,
+    stage_dir_name,
+)
 
 log = logging.getLogger(__name__)
 
 # Actions per stage state, docs/API.md section 3.2. Not a suggestion: the frontend
 # disables buttons from this list, so a wrong value here is a wrong UI.
+#
+# ``advance`` is deliberately absent for ``saved``: a take must carry a passed or
+# failed verdict first, and :meth:`CaptureService._allowed_actions` appends it once
+# that verdict exists. Keeping the gate there rather than in the route means the
+# button state and the 409 agree by construction.
 ALLOWED_ACTIONS: Dict[str, List[str]] = {
     "idle": ["start"],
     "recording": ["stop"],
-    "saved": ["discard", "advance"],
+    "saved": ["discard"],
 }
 
 # How long a stopped pipeline is given to release the bag before the file is
@@ -403,6 +418,8 @@ class CaptureService:
             stage["recording_started_at"] = started_at
             stage["note"] = (note or "").strip()
             stage["artifact"] = None
+            # A new take replaces whatever the previous one was marked as.
+            stage["review"] = empty_review()
             self._auto_stopped = False
             self._persist(session)
 
@@ -470,6 +487,7 @@ class CaptureService:
                     stage["state"] = "idle"
                     stage["recording_started_at"] = None
                     stage["artifact"] = None
+                    stage["review"] = empty_review()
                     self._persist(session)
             raise ApiError(
                 "RECORDING_TOO_SHORT",
@@ -490,6 +508,7 @@ class CaptureService:
                     stage["state"] = "idle"
                     stage["recording_started_at"] = None
                     stage["artifact"] = None
+                    stage["review"] = empty_review()
                     self._persist(session)
             raise ApiError(
                 "CAMERA_ERROR",
@@ -525,6 +544,9 @@ class CaptureService:
             stage["state"] = "saved"
             stage["recording_started_at"] = None
             stage["artifact"] = artifact
+            # Every save starts un-reviewed, which is what makes the verdict
+            # mandatory before advancing.
+            stage["review"] = empty_review()
             self._persist(session)
             self.sessions.save_meta(session, index)
             public = self._public_artifact(artifact)
@@ -550,6 +572,15 @@ class CaptureService:
                 if stage["state"] == "recording":
                     raise ApiError("STAGE_ALREADY_RECORDING", detail={"stage_index": index})
                 deleted = self.sessions.remove_stage_files(loaded, index)
+                # The verdict belongs to the take that just went away, so it goes
+                # with it. Both files are rewritten, otherwise a later load would
+                # read the old verdict back out of the frozen snapshot.
+                stage["state"] = "idle"
+                stage["recording_started_at"] = None
+                stage["artifact"] = None
+                stage["review"] = empty_review()
+                self.sessions.save(loaded)
+                self.sessions.save_meta(loaded, index)
                 return {"stage_index": index, "state": "idle", "deleted": deleted}
 
             stage = self.sessions.stage_of(session, index)
@@ -574,13 +605,77 @@ class CaptureService:
                 stage["state"] = "idle"
                 stage["recording_started_at"] = None
                 stage["artifact"] = None
+                stage["review"] = empty_review()
                 self._persist(session)
                 self._persist_meta_removal(session, index)
         log.info("stage %d discarded, removed %s", index, ", ".join(deleted) or "nothing")
         return {"stage_index": index, "state": "idle", "deleted": deleted}
 
+    # --------------------------------------------------------------- review
+
+    def save_review(
+        self, sid: str, index: int, verdict: str, comment: Optional[str]
+    ) -> Dict[str, Any]:
+        """Record the operator's verdict and comment for a saved take.
+
+        docs/API.md section 6.10. Only the current stage can be reviewed, which
+        is the same rule the capture screen follows: once a round has advanced,
+        that stage's verdict is settled.
+
+        Both the session mirror and ``meta.json`` are rewritten. The mirror is what
+        a restart rebuilds state from, and ``meta.json`` is the per stage record a
+        consumer of the dataset reads, so the two must not drift.
+        """
+        text = (comment or "").strip()
+        limit = self.config.review_comment_max_length
+        if len(text) > limit:
+            raise ApiError(
+                "REVIEW_NOTE_TOO_LONG",
+                f"That comment is {len(text)} characters. The limit is {limit}.",
+                detail={"length": len(text), "max_length": limit},
+            )
+        if verdict not in REVIEW_VERDICTS:
+            # Unreachable through HTTP, the route body is a Literal. Kept so a
+            # direct caller cannot persist a third value.
+            raise ApiError(
+                "REQUEST_INVALID",
+                detail={"field": "verdict", "allowed": list(REVIEW_VERDICTS)},
+            )
+
+        with self.lock:
+            session = self._require_live(sid)
+            if session["status"] == "finished":
+                raise ApiError("SESSION_FINISHED", detail={"session_id": sid})
+
+            stage = self.sessions.stage_of(session, index)
+            if stage["state"] != "saved":
+                raise ApiError(
+                    "STAGE_NOT_SAVED",
+                    "Record and save the take before reviewing it.",
+                    detail={"stage_index": index, "state": stage["state"]},
+                )
+
+            current = int(session["current_stage"])
+            if int(index) != current:
+                raise ApiError(
+                    "STAGE_NOT_CURRENT",
+                    detail={"stage_index": index, "current_stage": current},
+                )
+
+            stage["review"] = {
+                "verdict": verdict,
+                "comment": text,
+                "reviewed_at": now_iso(),
+            }
+            self._persist(session)
+            self.sessions.save_meta(session, index)
+            public = self._public(session)
+
+        log.info("stage %d reviewed as %s", index, verdict)
+        return {"session": public, "stage_index": index}
+
     def advance(self, sid: str, index: int) -> Dict[str, Any]:
-        """Move to the next stage, or finish the round. docs/API.md section 6.10."""
+        """Move to the next stage, or finish the round. docs/API.md section 6.11."""
         with self.lock:
             session = self._require_live(sid)
             if session["status"] == "finished":
@@ -675,16 +770,31 @@ class CaptureService:
 
     # --------------------------------------------------------------- internals
 
+    def _allowed_actions(self, stage: Dict[str, Any]) -> List[str]:
+        """Actions the stage permits right now, in the documented order.
+
+        Single source of truth for both ``allowed_actions`` on the wire and the
+        checks in :meth:`_require_action`, so the disabled button and the 409 can
+        never disagree.
+        """
+        state = str(stage.get("state") or "idle")
+        actions = list(ALLOWED_ACTIONS.get(state, []))
+        if state == "saved" and review_verdict(stage) is not None:
+            actions.append("advance")
+        return actions
+
     def _require_action(self, stage: Dict[str, Any], action: str) -> None:
         """Enforce the transition table rather than trusting the caller."""
         state = str(stage.get("state") or "idle")
-        if action in ALLOWED_ACTIONS.get(state, []):
+        if action in self._allowed_actions(stage):
             return
         if action == "start":
             if state == "recording":
                 raise ApiError("STAGE_ALREADY_RECORDING", detail={"stage_index": stage["index"]})
             raise ApiError("STAGE_ALREADY_SAVED", detail={"stage_index": stage["index"]})
         if action == "advance":
+            if state == "saved":
+                raise ApiError("REVIEW_REQUIRED", detail={"stage_index": stage["index"]})
             raise ApiError("STAGE_NOT_SAVED", detail={"stage_index": stage["index"]})
         if action == "stop":
             raise ApiError("STAGE_NOT_RECORDING", detail={"stage_index": stage["index"]})
@@ -776,8 +886,9 @@ class CaptureService:
                     "min_duration_s": float(stage.get("min_duration_s", self.config.min_duration_s)),
                     "max_duration_s": float(stage["max_duration_s"]),
                     "state": stage["state"],
-                    "allowed_actions": list(ALLOWED_ACTIONS.get(stage["state"], [])),
+                    "allowed_actions": self._allowed_actions(stage),
                     "recording_started_at": stage.get("recording_started_at"),
+                    "review": normalize_review(stage.get("review")),
                     "artifact": (
                         self._public_artifact(stage["artifact"])
                         if stage.get("artifact")

@@ -44,6 +44,7 @@ const outputName = computed(() => config.value?.recording.output_name ?? '')
 
 const isRecording = computed(() => stage.value?.state === 'recording')
 const isSaved = computed(() => stage.value?.state === 'saved')
+const isReviewed = computed(() => stage.value?.review?.verdict != null)
 const isCurrent = computed(() => session.value?.current_stage === props.index)
 const isLastStage = computed(() => props.index >= totalStages.value)
 
@@ -59,7 +60,7 @@ const position = computed(
  * second button a collector who navigated away from a take they want to redo has
  * no way back to it: advancing is the only other option and cannot be undone.
  */
-type PrimaryKind = 'capture' | 'advance' | 'finish' | 'current'
+type PrimaryKind = 'capture' | 'advance' | 'finish' | 'current' | 'review'
 
 const primary = computed<{ kind: PrimaryKind; label: string }>(() => {
   if (isRecording.value) {
@@ -70,6 +71,14 @@ const primary = computed<{ kind: PrimaryKind; label: string }>(() => {
   }
   if (!isCurrent.value) {
     return { kind: 'current', label: 'Go to current stage' }
+  }
+  /*
+   * The verdict is what unlocks advance, and it can only be written on the
+   * capture screen. Sending the collector back there is better than showing a
+   * Next stage button the backend would refuse.
+   */
+  if (!isReviewed.value) {
+    return { kind: 'review', label: 'Review the take' }
   }
   if (isLastStage.value) {
     return { kind: 'finish', label: 'Finish session' }
@@ -88,6 +97,11 @@ async function onPrimary() {
   const kind = primary.value.kind
 
   if (kind === 'capture') {
+    openCapture()
+    return
+  }
+
+  if (kind === 'review') {
     openCapture()
     return
   }
@@ -175,8 +189,14 @@ async function goHome() {
     </div>
 
     <p v-if="isSaved" class="wash wash--ok">
-      This stage has already been saved. Re-record it to take it again, or move on to the next
-      stage.
+      <template v-if="!isReviewed">
+        This take is saved but not reviewed. Open the capture screen to mark it Passed or Failed
+        before moving on.
+      </template>
+      <template v-else>
+        This stage has already been saved. Re-record it to take it again, or move on to the next
+        stage.
+      </template>
     </p>
 
     <footer class="foot">

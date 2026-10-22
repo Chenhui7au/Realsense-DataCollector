@@ -24,11 +24,13 @@ from ..models import (
     DiscardRecordResult,
     PreviewResult,
     RecordNoteBody,
+    ReviewResult,
     Session,
     SessionCreateBody,
     SessionDeleteResult,
     SessionListResponse,
     StartRecordResult,
+    StageReviewBody,
     StopRecordResult,
 )
 from ..services import Services
@@ -124,6 +126,23 @@ def discard_record(
 ) -> DiscardRecordResult:
     """Delete a take and return the stage to idle. Idempotent."""
     return DiscardRecordResult(**_capture(services).discard_record(sid, index))
+
+
+@router.post("/sessions/{sid}/stages/{index}/review", response_model=ReviewResult)
+def review_stage(
+    sid: str,
+    index: int,
+    body: StageReviewBody,
+    services: Services = Depends(get_services),
+) -> ReviewResult:
+    """Mark a saved take passed or failed, with an optional comment.
+
+    Required before ``advance``: a saved stage keeps ``advance`` out of its
+    ``allowed_actions`` until this call has stored a verdict.
+    """
+    return ReviewResult(
+        **_capture(services).save_review(sid, index, body.verdict, body.comment)
+    )
 
 
 @router.post("/sessions/{sid}/stages/{index}/advance", response_model=AdvanceResult)

@@ -14,6 +14,7 @@ import type {
   Health,
   PreviewResult,
   ProjectInfo,
+  ReviewResult,
   Session,
   SessionCreateBody,
   SessionListResponse,
@@ -110,6 +111,9 @@ export const backendApi: CaptureApi = {
 
   discardRecord: (sid, index) =>
     request<DiscardRecordResult>(`/sessions/${sid}/stages/${index}/record/discard`, jsonBody({})),
+
+  saveReview: (sid, index, body) =>
+    request<ReviewResult>(`/sessions/${sid}/stages/${index}/review`, jsonBody(body)),
 
   advance: (sid, index) =>
     request<AdvanceResult>(`/sessions/${sid}/stages/${index}/advance`, jsonBody({})),

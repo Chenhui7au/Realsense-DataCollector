@@ -6,6 +6,7 @@ import AppButton from '@/components/AppButton.vue'
 import CaptureControls from '@/components/CaptureControls.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import PreviewPane from '@/components/PreviewPane.vue'
+import StageReview from '@/components/StageReview.vue'
 import StatePill from '@/components/StatePill.vue'
 import { useApp } from '@/composables/useApp'
 import { useCountdown } from '@/composables/useCountdown'
@@ -39,6 +40,7 @@ const discardOpen = ref(false)
 const homeConfirmOpen = ref(false)
 const streamUrl = api.previewStreamUrl()
 const previewPane = ref<InstanceType<typeof PreviewPane> | null>(null)
+const reviewRef = ref<InstanceType<typeof StageReview> | null>(null)
 const { elapsed, remaining, start: startClock, resumeFrom, reset: resetClock } = useCountdown()
 
 const stage = computed(() => stageAt(props.index))
@@ -54,6 +56,8 @@ const bytesPerSecond = computed(() => config.value?.recording.bytes_per_second |
 const outputName = computed(() => config.value?.recording.output_name ?? '')
 /** Used only when the service could not derive a rate, so the gauge still shows. */
 const FALLBACK_BYTES_PER_S = 60 * 1024 * 1024
+/** Mirrors review.comment_max_length in the shipped YAML. */
+const REVIEW_COMMENT_MAX_LENGTH = 500
 
 /*
  * Limits come from the session's frozen stage object when there is one. Reading
@@ -97,7 +101,9 @@ const statusHint = computed(() => {
     case 'recording':
       return `Recording. This take stops on its own at ${maxDuration.value ?? '--'} s.`
     case 'saved':
-      return 'Saved. Move on, or re-record to replace this take.'
+      return stage.value.review?.verdict
+        ? 'Saved and reviewed. Move on, or re-record to replace this take.'
+        : 'Saved. Mark the take Passed or Failed to unlock the next stage.'
     default:
       return ''
   }
@@ -257,6 +263,16 @@ async function onDiscard() {
 async function onAdvance() {
   if (!session.value) return
   const sid = session.value.session_id
+
+  /*
+   * A comment typed but not yet blurred is saved first. The verdict itself is
+   * already stored, it is what enabled this button. If the flush fails the round
+   * stays put rather than advancing with the note silently dropped.
+   */
+  if (reviewRef.value && !(await reviewRef.value.flush())) {
+    return
+  }
+
   try {
     const result = await run('advance', () => api.advance(sid, props.index))
     if (!result) return
@@ -349,6 +365,17 @@ async function leaveForHome() {
             </div>
           </template>
         </PreviewPane>
+
+        <!--
+          Shown only once a take exists. The verdict is what unlocks Next stage,
+          so it sits directly under the feed the collector is judging.
+        -->
+        <StageReview
+          v-if="artifact && stage"
+          ref="reviewRef"
+          :stage="stage"
+          :max-length="REVIEW_COMMENT_MAX_LENGTH"
+        />
       </div>
 
       <aside class="cap__rail">
@@ -462,6 +489,14 @@ async function leaveForHome() {
   grid-template-columns: minmax(0, 1fr) 340px;
   gap: var(--s5);
   align-items: start;
+}
+
+/* Feed and review panel stack; the panel appears only after a take is saved. */
+.cap__view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  min-width: 0;
 }
 
 @media (max-width: 1080px) {

@@ -131,6 +131,13 @@ storage:
   # When false a finished round is deleted as soon as it completes.
   keep_finished_sessions: true
 
+review:
+  # After a take is saved the capture screen asks the operator to mark it passed
+  # or failed before the round can move on, and offers a free text comment. This
+  # bounds the comment. The verdict is fixed to passed or failed and has no
+  # configuration. Both land in the stage's meta.json.
+  comment_max_length: 500
+
 # Stage count is not hardcoded. ``stages`` is a pool of prepared definitions and
 # ``stages_count`` picks how many of them a round uses: the first N, in order.
 # The service refuses to boot if the pool is empty, if indices are not unique and

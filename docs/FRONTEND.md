@@ -437,6 +437,16 @@ N 是 `GET /api/config` 返回的 `total_stages`，取自后端的 `stages_count
 
 **遮罩**。开始与停止都会触发后端重启 pipeline，前端在这段时间盖上遮罩并显示 Reconfiguring the camera。团队已确认黑屏可接受，遮罩的作用只是让等待有反馈，避免误以为卡死。
 
+**采集反馈**。停止之后，预览区下方出现一块 Take review，包含两个互斥选项 Passed 与 Failed，以及一个选填的评论框。这是推进到下一阶段的前提：结论未提交时后端不返回 `advance`，Next stage 处于禁用态，悬浮提示 Choose Passed or Failed for this take first。
+
+提交时机分三种，都不需要额外点保存按钮。点选项立即提交，评论在失焦时提交，点 Next stage 前会把尚未失焦的评论先刷一次，刷失败就不推进，避免把采集员刚打的字静默丢掉。请求串行排队，所以连点 Passed 与 Failed 时后一次覆盖前一次，不会因为网络乱序把先发的写在后面。
+
+选项的选中态读自后端返回的阶段对象，不做乐观更新。提交失败时界面上仍然是上一次存下来的结论，不会出现「看起来标了其实没存」的情况。评论长度上限用 `review.comment_max_length`，前端按现有做法在视图里镜像一份常量，与示意图描述的处理一致。
+
+已经推进过的阶段不能再改结论，所以引导页在遇到「已保存但未评价」的当前阶段时，主按钮是 Review the take，跳回采集页，而不是给出一个后端会拒绝的 Next stage。
+
+结论只是标签，两个选项都不删数据，也不会让卡片从结束页消失或变成 Missing。Re-record 是这一页上唯一会删文件的按钮，它照旧带二次确认。
+
 **轮询**。录制期间每两秒查一次会话。这是为了感知后端在超时时自行完成的停止与保存，浏览器没有别的方式知道这件事。
 
 **返回主页分两种情况**。录制中按 Back to home 会先弹二次确认，因为离开这一页会终止当前这条拍摄，代价是实打实的，且没有撤销入口。不在录制时，已保存的结果不受影响，未录制的阶段也不受影响，此时不弹确认，直接走。
@@ -454,7 +464,7 @@ N 是 `GET /api/config` 返回的 `total_stages`，取自后端的 `stages_count
 - 标题为 All stages recorded 或 Session closed，按完成度区分
 - 四格摘要，分别是已保存阶段数、总时长、总体积、结束时刻
 - 会话标识与数据目录各一行，附 Copy path 按钮
-- 八张结果卡片，含缩略图、阶段编号与名称、时长、体积、开始时刻，未录制的阶段显示为虚线卡片并标记 Missing
+- 八张结果卡片，含缩略图、阶段编号与名称、时长、体积、开始时刻，未录制的阶段显示为虚线卡片并标记 Missing。已评价的卡片额外显示 passed 或 failed 徽标与评论摘要
 - 右上角是 Delete session 与 Start new session
 - 页脚说明示意图会保留到下一轮，只有录制结果会被清空
 
@@ -471,7 +481,9 @@ N 是 `GET /api/config` 返回的 `total_stages`，取自后端的 `stages_count
 | `discard` | Re-record | 白底描边，点击后二次确认 |
 | `advance` | Next stage 或 Finish session | 深青实心 |
 
-不在列表中的按钮一律禁用。禁用态不是简单降低透明度，而是转成浅灰底加浅灰字，读起来是失效而不是变淡。鼠标悬浮时给出原因文案，文案在前端按状态映射硬编码。
+`saved` 状态下的 `advance` 取决于该阶段有没有 `passed` 或 `failed` 结论，这是唯一一处动作由数据决定的场合，见 `docs/API.md` 3.7。前端不做额外判断，仍然只看 `allowed_actions`。
+
+不在列表中的按钮一律禁用。禁用态不是简单降低透明度，而是转成浅灰底加浅灰字，读起来是失效而不是变淡。鼠标悬浮时给出原因文案，文案在前端按状态映射硬编码。`advance` 被禁用且阶段已保存时，提示是 Choose Passed or Failed for this take first，而不是 Save this stage before moving on。
 
 控制按钮固定 2x2 网格，位置不随状态变化，触摸屏上能形成肌肉记忆。
 
