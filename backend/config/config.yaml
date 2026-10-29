@@ -171,7 +171,7 @@ review:
 # keeps the unused definitions (and their titles and descriptions) for later.
 #
 # Defaults to 8. Set it to 10 to run every definition, or to 3 for a quick pass.
-stages_count: 8
+stages_count: 6
 
 # Each stage's own max_duration_s is the one that counts: it is what the
 # countdown and the automatic stop use. camera.recording.max_duration_s above is
